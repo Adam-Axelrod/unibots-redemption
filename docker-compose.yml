@@ -23,3 +23,34 @@ services:
       bash -c "colcon build --symlink-install &&
                source install/setup.bash &&
                ros2 launch robot_bringup sim.launch.py"
+
+  # ---------------------------------------------------------------- real robot
+  # Raspberry Pi only. Start it explicitly:
+  #     docker compose --profile robot up robot
+  # The micro-ROS agent must already be running (scripts/start_agent.sh).
+  robot:
+    profiles: ["robot"]
+    build:
+      context: ./docker
+      dockerfile: Dockerfile.robot
+    image: unibots-redemption-robot:latest
+    container_name: unibots-robot
+    working_dir: /ws
+    volumes:
+      - ./ws:/ws
+      - /dev:/dev          # the lidar and the ESP32 are both USB serial devices
+    privileged: true
+    # Needed to reach the micro-ROS agent, which runs in its own container with
+    # --net=host. Bridge networking cannot see it. Linux only -- which is fine,
+    # this service never runs on a Mac or Windows machine.
+    network_mode: host
+    environment:
+      # MUST be 20: that is what the ESP32 is configured with. Any other value
+      # and the MCU's topics silently never appear.
+      - ROS_DOMAIN_ID=20
+    stdin_open: true
+    tty: true
+    command: >
+      bash -c "colcon build --symlink-install &&
+               source install/setup.bash &&
+               ros2 launch robot_bringup robot.launch.py"
