@@ -1,0 +1,8 @@
+# colcon build output -- always regenerated, never commit
+ws/build/
+ws/install/
+ws/log/
+
+__pycache__/
+*.py[cod]
+.DS_Store

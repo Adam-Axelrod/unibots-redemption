@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Robot Sim</title>
+<style>
+  :root {
+    --bg: #0f1419; --panel: #171d24; --line: #2a333d;
+    --ink: #e6edf3; --dim: #8b98a5;
+    --robot: #4dd4c0; --ray: #f5a35c; --trail: #3b6ea8; --hit: #e5534b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    display: flex; flex-direction: column; min-height: 100vh;
+  }
+  header {
+    padding: 12px 16px; border-bottom: 1px solid var(--line);
+    display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap;
+  }
+  h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  .world { color: var(--dim); }
+  #status { margin-left: auto; color: var(--dim); }
+  #status.live { color: var(--robot); }
+  main { flex: 1; display: flex; padding: 16px; gap: 16px; flex-wrap: wrap; }
+  #canvas-wrap { flex: 1; min-width: 320px; }
+  canvas {
+    width: 100%; height: auto; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 8px; display: block;
+  }
+  aside { width: 240px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 12px; margin-bottom: 12px;
+  }
+  .card h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--dim); margin: 0 0 8px; font-weight: 600;
+  }
+  .row { display: flex; justify-content: space-between; gap: 8px; }
+  .row span:last-child { color: var(--robot); }
+  kbd {
+    background: #222b34; border: 1px solid var(--line); border-radius: 4px;
+    padding: 1px 5px; font-size: 12px;
+  }
+  .hint { color: var(--dim); font-size: 12px; }
+  .warn { color: var(--hit); font-weight: 600; }
+  @media (max-width: 720px) { aside { width: 100%; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Robot Sim</h1>
+  <span class="world" id="world-name">loading…</span>
+  <span id="status">connecting…</span>
+</header>
+
+<main>
+  <div id="canvas-wrap"><canvas id="c" width="900" height="600"></canvas></div>
+  <aside>
+    <div class="card">
+      <h2>Pose</h2>
+      <div class="row"><span>x</span><span id="px">–</span></div>
+      <div class="row"><span>y</span><span id="py">–</span></div>
+      <div class="row"><span>heading</span><span id="pt">–</span></div>
+    </div>
+    <div class="card">
+      <h2>Velocity</h2>
+      <div class="row"><span>forward</span><span id="vx">–</span></div>
+      <div class="row"><span>strafe</span><span id="vy">–</span></div>
+      <div class="row"><span>turn</span><span id="wz">–</span></div>
+    </div>
+    <div class="card">
+      <h2>Drive it yourself</h2>
+      <p class="hint">
+        <kbd>↑</kbd><kbd>↓</kbd> forward &middot; <kbd>←</kbd><kbd>→</kbd> turn<br>
+        <kbd>A</kbd><kbd>D</kbd> strafe sideways
+      </p>
+      <p class="hint">Your own node publishing <code>/cmd_vel</code> drives it too.</p>
+    </div>
+    <div class="card">
+      <h2>State</h2>
+      <div id="collision" class="hint">clear</div>
+    </div>
+  </aside>
+</main>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let world = null, state = null;
+
+// ---- world -> canvas coordinates -------------------------------------------
+// ROS uses +x right, +y up. Canvas uses +y down, so we flip.
+let scale = 100, offsetX = 0, offsetY = 0;
+
+function fitWorld(segments) {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const [a, b] of segments) {
+    for (const p of [a, b]) {
+      minX = Math.min(minX, p[0]); maxX = Math.max(maxX, p[0]);
+      minY = Math.min(minY, p[1]); maxY = Math.max(maxY, p[1]);
+    }
+  }
+  const pad = 0.4;
+  const w = (maxX - minX) + pad * 2, h = (maxY - minY) + pad * 2;
+  scale = Math.min(canvas.width / w, canvas.height / h);
+  offsetX = canvas.width / 2 - ((minX + maxX) / 2) * scale;
+  offsetY = canvas.height / 2 + ((minY + maxY) / 2) * scale;
+}
+
+const tx = x => x * scale + offsetX;
+const ty = y => -y * scale + offsetY;
+
+// ---- drawing ---------------------------------------------------------------
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!world) return;
+
+  // 1 m grid
+  ctx.strokeStyle = '#1e262e'; ctx.lineWidth = 1;
+  for (let x = -20; x <= 20; x++) {
+    ctx.beginPath(); ctx.moveTo(tx(x), 0); ctx.lineTo(tx(x), canvas.height); ctx.stroke();
+  }
+  for (let y = -20; y <= 20; y++) {
+    ctx.beginPath(); ctx.moveTo(0, ty(y)); ctx.lineTo(canvas.width, ty(y)); ctx.stroke();
+  }
+
+  if (state && state.trail) {
+    ctx.strokeStyle = getComputedStyle(document.documentElement)
+                        .getPropertyValue('--trail').trim();
+    ctx.lineWidth = 2; ctx.beginPath();
+    state.trail.forEach(([x, y], i) => i ? ctx.lineTo(tx(x), ty(y)) : ctx.moveTo(tx(x), ty(y)));
+    ctx.stroke();
+  }
+
+  if (state && state.ranges) {
+    ctx.strokeStyle = 'rgba(245,163,92,0.20)'; ctx.lineWidth = 1;
+    ctx.beginPath();
+    state.ranges.forEach((r, i) => {
+      if (!isFinite(r)) return;
+      const a = state.theta + state.angle_min + i * state.angle_increment;
+      ctx.moveTo(tx(state.x), ty(state.y));
+      ctx.lineTo(tx(state.x + r * Math.cos(a)), ty(state.y + r * Math.sin(a)));
+    });
+    ctx.stroke();
+  }
+
+  // walls last so they sit on top of the rays
+  ctx.strokeStyle = '#7d8b99'; ctx.lineWidth = 3; ctx.beginPath();
+  for (const [a, b] of world.segments) {
+    ctx.moveTo(tx(a[0]), ty(a[1])); ctx.lineTo(tx(b[0]), ty(b[1]));
+  }
+  ctx.stroke();
+
+  if (state && typeof state.x === 'number') drawRobot(state);
+}
+
+function drawRobot(s) {
+  const r = 0.14 * scale;
+  ctx.save();
+  ctx.translate(tx(s.x), ty(s.y));
+  ctx.rotate(-s.theta);                       // canvas y is flipped
+  ctx.fillStyle = s.collided
+    ? getComputedStyle(document.documentElement).getPropertyValue('--hit').trim()
+    : getComputedStyle(document.documentElement).getPropertyValue('--robot').trim();
+  ctx.beginPath();
+  ctx.moveTo(r * 1.4, 0); ctx.lineTo(-r, r * 0.85); ctx.lineTo(-r, -r * 0.85);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+
+// ---- live state ------------------------------------------------------------
+const fmt = (v, n = 2) => (typeof v === 'number' ? v.toFixed(n) : '–');
+
+fetch('/world').then(r => r.json()).then(w => {
+  world = w;
+  document.getElementById('world-name').textContent = w.name;
+  fitWorld(w.segments);
+  draw();
+});
+
+const src = new EventSource('/stream');
+src.onopen = () => {
+  const el = document.getElementById('status');
+  el.textContent = 'live'; el.className = 'live';
+};
+src.onerror = () => {
+  const el = document.getElementById('status');
+  el.textContent = 'disconnected'; el.className = '';
+};
+src.onmessage = e => {
+  state = JSON.parse(e.data);
+  document.getElementById('px').textContent = fmt(state.x) + ' m';
+  document.getElementById('py').textContent = fmt(state.y) + ' m';
+  document.getElementById('pt').textContent =
+    fmt(state.theta === undefined ? undefined : state.theta * 180 / Math.PI, 0) + '°';
+  document.getElementById('vx').textContent = fmt(state.vx) + ' m/s';
+  document.getElementById('vy').textContent = fmt(state.vy) + ' m/s';
+  document.getElementById('wz').textContent = fmt(state.wz) + ' rad/s';
+  const col = document.getElementById('collision');
+  col.textContent = state.collided ? 'BLOCKED — touching a wall' : 'clear';
+  col.className = state.collided ? 'warn' : 'hint';
+  draw();
+};
+
+// ---- arrow-key driving -----------------------------------------------------
+const held = new Set();
+const DRIVE = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'a', 'd'];
+
+addEventListener('keydown', e => {
+  if (DRIVE.includes(e.key)) { held.add(e.key); e.preventDefault(); }
+});
+addEventListener('keyup', e => held.delete(e.key));
+
+setInterval(() => {
+  if (!held.size) return;
+  const cmd = {
+    vx: (held.has('ArrowUp') ? 0.4 : 0) + (held.has('ArrowDown') ? -0.4 : 0),
+    vy: (held.has('a') ? 0.3 : 0) + (held.has('d') ? -0.3 : 0),
+    wz: (held.has('ArrowLeft') ? 1.0 : 0) + (held.has('ArrowRight') ? -1.0 : 0),
+  };
+  fetch('/cmd', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(cmd),
+  }).catch(() => {});
+}, 100);
+</script>
+</body>
+</html>
