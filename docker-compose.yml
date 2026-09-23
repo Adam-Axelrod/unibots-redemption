@@ -1,0 +1,25 @@
+services:
+  sim:
+    build: ./docker
+    image: unibots-redemption:latest
+    container_name: unibots-sim
+    working_dir: /ws
+    # Your source stays on your machine -- edit it in your normal editor and the
+    # container sees the change immediately.
+    volumes:
+      - ./ws:/ws
+    # The visualiser. Host networking does not work on Mac or Windows, so we map
+    # the port explicitly instead -- this behaves the same everywhere.
+    ports:
+      - "8080:8080"
+    environment:
+      # Everything runs inside this one container, so keep ROS traffic on
+      # localhost. Stops your nodes discovering a teammate's on the same wifi.
+      - ROS_LOCALHOST_ONLY=1
+      - ROS_DOMAIN_ID=42
+    stdin_open: true
+    tty: true
+    command: >
+      bash -c "colcon build --symlink-install &&
+               source install/setup.bash &&
+               ros2 launch robot_bringup sim.launch.py"
