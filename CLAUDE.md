@@ -94,11 +94,40 @@ ros2 run robot_control square_driver
 
 ### Real robot (on the Pi)
 
+Clone this same repo on the Pi. `robot_control` runs there unchanged -- only the
+launch file differs.
+
 ```bash
-./scripts/start_agent.sh                # terminal 1, leave running
-# terminal 2: start your lidar driver, then
-ros2 launch robot_bringup robot.launch.py
+./scripts/start_agent.sh                       # terminal 1, leave running
+docker compose --profile robot up robot        # terminal 2: lidar + TFs + odom_tf
+docker compose exec robot bash                 # terminal 3
 ros2 run robot_control sweep_planner
+```
+
+Check both halves are alive before blaming your code:
+
+```bash
+ros2 topic echo /scan --once     # lidar
+ros2 topic echo /odom --once     # ESP32 + micro-ROS agent
+```
+
+### The lidar: Oradar/Orbbec MS200
+
+Driver package is `oradar_lidar`, built from source into `/opt/lidar_ws` by
+`docker/Dockerfile.robot` -- it is not in apt, and it is deliberately kept out
+of `ws/` because this repo does not vendor third-party source.
+
+Its defaults line up with what this repo expects: topic `/scan`, frame_id
+`laser_frame`, 230400 baud. Default device is **`/dev/ttyACM0`**, which is a
+different device class from the ESP32's `/dev/ttyUSB0`, so the two do not fight
+over a port. Confirm with `ls /dev/ttyACM* /dev/ttyUSB*`.
+
+If the launch errors with "file not found", the driver's launch file has a
+different name than assumed. List the real ones and pass it through:
+
+```bash
+ls $(ros2 pkg prefix oradar_lidar)/share/oradar_lidar/launch
+ros2 launch robot_bringup robot.launch.py lidar_launch:=<the real name>
 ```
 
 ⚠️ **`ROS_DOMAIN_ID` must be 20 on the Pi** — that is what the ESP32 is
@@ -107,12 +136,6 @@ uses 42, which is fine and deliberate: it keeps laptop testing isolated. But if
 the Pi's shell is not on 20, the MCU's topics simply will not appear and nothing
 will say why.
 
-The lidar driver is **not** in this repo — it is apt-installed in the Pi's
-container and depends on which lidar is fitted. Find it with:
-
-```bash
-ros2 topic info /scan                   # names the publishing node
-```
 
 ## Conventions
 

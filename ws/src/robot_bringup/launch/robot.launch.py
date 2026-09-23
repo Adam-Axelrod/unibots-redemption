@@ -5,16 +5,45 @@ terminal (see scripts/start_agent.sh) -- that is what puts the ESP32's topics
 on the ROS graph.
 
     ros2 launch robot_bringup robot.launch.py
+    ros2 launch robot_bringup robot.launch.py lidar:=false      # skip the lidar
 
-The lidar driver is NOT started here, because which package it is depends on
-which lidar is fitted. Start it yourself, then check:  ros2 topic echo /scan
+Check it worked:
+    ros2 topic echo /scan --once     # lidar is alive
+    ros2 topic echo /odom --once     # ESP32 + agent are alive
 """
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
+    lidar = LaunchConfiguration('lidar')
+    lidar_launch = LaunchConfiguration('lidar_launch')
+
     return LaunchDescription([
+        DeclareLaunchArgument(
+            'lidar', default_value='true',
+            description='start the MS200 lidar driver'),
+        DeclareLaunchArgument(
+            'lidar_launch', default_value='ms200_scan.launch.py',
+            description='launch file inside the oradar_lidar package. If you '
+                        'get "file not found", list the real names with: '
+                        'ls $(ros2 pkg prefix oradar_lidar)/share/oradar_lidar/launch'),
+
+        # Oradar/Orbbec MS200. Publishes /scan with frame_id laser_frame, which
+        # is what the static transform below expects. Its defaults are
+        # /dev/ttyACM0 at 230400 baud -- note that is a different device class
+        # from the ESP32 on /dev/ttyUSB0, so the two do not collide.
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(PathJoinSubstitution(
+                [FindPackageShare('oradar_lidar'), 'launch', lidar_launch])),
+            condition=IfCondition(lidar),
+        ),
+
         # The ESP32 publishes /odom_raw; this makes it look like the simulator.
         Node(
             package='robot_bringup',
