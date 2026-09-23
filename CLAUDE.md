@@ -113,21 +113,50 @@ ros2 topic echo /odom --once     # ESP32 + micro-ROS agent
 
 ### The lidar: Oradar/Orbbec MS200
 
-Driver package is `oradar_lidar`, built from source into `/opt/lidar_ws` by
-`docker/Dockerfile.robot` -- it is not in apt, and it is deliberately kept out
-of `ws/` because this repo does not vendor third-party source.
+Package `oradar_lidar`, executable `oradar_scan`. Vendored as
+`docker/vendor/oradar_ros.tar.xz` and built into `/opt/lidar_ws` by
+`docker/Dockerfile.robot`.
 
-Its defaults line up with what this repo expects: topic `/scan`, frame_id
-`laser_frame`, 230400 baud. Default device is **`/dev/ttyACM0`**, which is a
-different device class from the ESP32's `/dev/ttyUSB0`, so the two do not fight
-over a port. Confirm with `ls /dev/ttyACM* /dev/ttyUSB*`.
+**Why vendored when nothing else is:** Yahboom ships this driver only as a
+Google Drive download. Their own GitHub link (`YahboomTechnology/MS200Lidar`)
+is a 404 — the repo does not exist — so there is no upstream to depend on and a
+Drive URL is not a reproducible build source. The tarball is 75 KB and builds
+as-is: its shipped `package.xml` is already the ROS 2 one and its
+`CMakeLists.txt` already sets `COMPILE_METHOD COLCON`.
 
-If the launch errors with "file not found", the driver's launch file has a
-different name than assumed. List the real ones and pass it through:
+**We do not use the driver's own `ms200_scan.launch.py`**, for two reasons:
+
+1. It is written in Foxy-era syntax (`node_executable=`, `node_name=`), which
+   was **removed in Humble**. Running it raises `TypeError`.
+2. It publishes its own `base_link` → `lidar` transform at 0.18 m, which would
+   fight with the static transform in `robot.launch.py`.
+
+Instead `robot.launch.py` starts `oradar_scan` directly and overrides two of
+its defaults so that frames and topics match the simulator exactly:
+
+| Parameter | Driver default | We use | Why |
+|---|---|---|---|
+| `frame_id` | `lidar` | `laser_frame` | same frame name in sim and on hardware |
+| `scan_topic` | `/scan` | `/scan` | unchanged |
+| `port_name` | `/dev/oradar` | `/dev/oradar` | udev symlink, see below |
+| `baudrate` | `230400` | `230400` | unchanged |
+
+**The serial port, and why it does not clash with the ESP32.** The MS200 is a
+**`ttyACM`** device (USB CDC, VID `1a86` PID `55d4`); the ESP32 is a `ttyUSB`
+device. Different classes, so they cannot steal each other's number. On top of
+that, `scripts/oradar.rules` creates a stable `/dev/oradar` symlink. Install it
+on the Pi once:
 
 ```bash
-ls $(ros2 pkg prefix oradar_lidar)/share/oradar_lidar/launch
-ros2 launch robot_bringup robot.launch.py lidar_launch:=<the real name>
+sudo cp scripts/oradar.rules /etc/udev/rules.d/
+sudo udevadm control --reload && sudo udevadm trigger
+ls -l /dev/oradar          # should point at ttyACM0
+```
+
+If you skip the udev rule, pass the raw device instead:
+
+```bash
+ros2 launch robot_bringup robot.launch.py lidar_port:=/dev/ttyACM0
 ```
 
 ⚠️ **`ROS_DOMAIN_ID` must be 20 on the Pi** — that is what the ESP32 is
