@@ -317,3 +317,5 @@ git branch --show-current   # just the branch name
 Paste the output into the group chat. Somebody will recognise it — and if a
 command looks destructive and you are not sure, **ask before running it**.
 Anything already pushed to GitHub can be recovered.
+
+<!-- protection check, this branch is deleted straight after -->
