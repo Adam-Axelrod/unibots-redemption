@@ -177,8 +177,19 @@ will say why.
 - **Publish `/cmd_vel` continuously on a timer.** Both the simulator and the
   real firmware stop the robot if commands go quiet — that is a safety feature,
   not a bug.
-- **Always publish a zero `Twist` on shutdown.** Otherwise the real robot keeps
-  driving after Ctrl-C.
+- **Publish a zero `Twist` on shutdown, and catch `ExternalShutdownException`.**
+  On Ctrl-C rclpy's SIGINT handler destroys the ROS context *before* `spin()`
+  returns, so the exit arrives as `ExternalShutdownException`, not
+  `KeyboardInterrupt`. Catch both, or the node exits 1 with a traceback. Guard
+  the stop and `rclpy.shutdown()` with `if rclpy.ok():`, because by then the
+  publisher's context is already invalid.
+
+  So the zero `Twist` is belt-and-braces, not the real safety net: what actually
+  stops the car after Ctrl-C is the **0.5 s command watchdog** in the simulator
+  and in the ESP32 firmware. Do not disable rclpy's signal handling to work
+  around this (`signal_handler_options=SignalHandlerOptions.NO`) — it makes
+  `spin()` ignore Ctrl-C altogether and the node has to be killed, which is
+  worse. The CI smoke test checks every node stops cleanly.
 - `ws/build/`, `ws/install/`, `ws/log/` are generated. Never commit them.
 
 ## Deliberately not here

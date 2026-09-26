@@ -20,6 +20,7 @@ import math
 
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import ExternalShutdownException
 
 from geometry_msgs.msg import Twist, TransformStamped
 from nav_msgs.msg import Odometry
@@ -200,12 +201,16 @@ def main(args=None):
     node = SimNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
+        # Ctrl-C. rclpy's SIGINT handler shuts the context down before spin()
+        # returns, so this arrives as ExternalShutdownException rather than
+        # KeyboardInterrupt -- catching only the latter exits with a traceback.
         pass
     finally:
         node.viz.stop()
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
