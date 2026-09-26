@@ -64,9 +64,19 @@ dump() {  # dump a log, indented, so CI output stays readable
     sed 's/^/          /' "$1" | tail -n 30
 }
 
+# Runs on EXIT, including after every check has passed -- so it must never be
+# able to block. A bare `wait` here with no timeout is exactly what once made
+# this script hang for 20 minutes in CI with all its checks already green.
 cleanup() {
-    [ -n "$SIM_PID" ] && kill -INT "$SIM_PID" 2>/dev/null
-    wait "$SIM_PID" 2>/dev/null
+    if [ -n "$SIM_PID" ]; then
+        # sim.launch.py starts several node processes, so signal the whole group;
+        # SIGINT to the launcher alone can leave the children behind.
+        kill -INT -"$SIM_PID" 2>/dev/null || kill -INT "$SIM_PID" 2>/dev/null
+        if ! wait_for_exit "$SIM_PID" 50; then          # 5s to go quietly
+            kill -9 -"$SIM_PID" 2>/dev/null || kill -9 "$SIM_PID" 2>/dev/null
+            wait_for_exit "$SIM_PID" 20
+        fi
+    fi
     rm -rf "$LOGDIR"
 }
 trap cleanup EXIT
@@ -74,7 +84,9 @@ trap cleanup EXIT
 # --------------------------------------------------------------- start the sim
 note "Starting the simulator"
 # viz_port 0 is not valid, so use the normal one -- nothing else binds it in CI.
-ros2 launch robot_bringup sim.launch.py > "$LOGDIR/sim.log" 2>&1 &
+# setsid so SIM_PID is also a process-group id, and cleanup can take the whole
+# launch tree down rather than just the launcher.
+setsid ros2 launch robot_bringup sim.launch.py > "$LOGDIR/sim.log" 2>&1 &
 SIM_PID=$!
 
 # Wait for the sim to actually publish, rather than sleeping a fixed guess.

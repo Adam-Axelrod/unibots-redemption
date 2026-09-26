@@ -47,9 +47,12 @@ jobs:
           source /opt/ros/humble/setup.bash
           colcon build --symlink-install
 
+      # The script bounds every wait internally, but an outer timeout means a
+      # future hang fails in 10 minutes with a clear reason instead of sitting
+      # until the job cap.
       - name: Smoke test
         shell: bash
-        run: .github/scripts/smoke_test.sh
+        run: timeout 600 .github/scripts/smoke_test.sh
 
       # The build logs are the only way to debug a failure after the fact.
       - name: Upload build logs
