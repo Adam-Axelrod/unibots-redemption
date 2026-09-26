@@ -14,6 +14,7 @@ robot_localization (see CLAUDE.md) -- but start here, it is far simpler.
 """
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import ExternalShutdownException
 from geometry_msgs.msg import TransformStamped
 from nav_msgs.msg import Odometry
 from tf2_ros import TransformBroadcaster
@@ -60,11 +61,15 @@ def main(args=None):
     node = OdomTf()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
+        # Ctrl-C. rclpy's SIGINT handler shuts the context down before spin()
+        # returns, so this arrives as ExternalShutdownException rather than
+        # KeyboardInterrupt -- catching only the latter exits with a traceback.
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

@@ -1,0 +1,8 @@
+# Every file in this repo is owned by Adam. Combined with the "require review
+# from Code Owners" branch rule on main, this means one thing in practice:
+#
+#     every pull request needs Adam's approval before it can be merged.
+#
+# Adding a name here would let that person approve too. Removing this file
+# would let ANY collaborator approve, which is not what we want right now.
+*       @Adam-Axelrod
