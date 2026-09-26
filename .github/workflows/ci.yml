@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# A second push to the same PR cancels the first run instead of queueing behind it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build + smoke test
+    runs-on: ubuntu-latest
+    # The same base image docker/Dockerfile uses, so CI and `docker compose up`
+    # agree. If they ever disagree, that is the bug.
+    container: ros:humble-ros-base
+    timeout-minutes: 20
+
+    env:
+      # Keep CI's ROS traffic to itself, exactly like the sim service does.
+      ROS_LOCALHOST_ONLY: 1
+      ROS_DOMAIN_ID: 42
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Fails in seconds with an actionable message, before the slow build.
+      - name: Every node registered in setup.py
+        run: python3 .github/scripts/check_entrypoints.py
+
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            python3-colcon-common-extensions \
+            ros-humble-tf2-ros
+          rm -rf /var/lib/apt/lists/*
+
+      - name: colcon build
+        shell: bash
+        working-directory: ws
+        run: |
+          source /opt/ros/humble/setup.bash
+          colcon build --symlink-install
+
+      - name: Smoke test
+        shell: bash
+        run: .github/scripts/smoke_test.sh
+
+      # The build logs are the only way to debug a failure after the fact.
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: colcon-logs
+          path: ws/log/
+          retention-days: 7
