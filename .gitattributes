@@ -1,0 +1,9 @@
+# Everything in this repo runs inside Linux containers or on the Pi, so check
+# files out with LF endings on every machine -- including Windows, where Git
+# otherwise converts to CRLF on checkout (core.autocrlf=true is the default).
+#
+# A CRLF entrypoint.sh breaks the Docker build silently: the shebang becomes
+# "#!/bin/bash\r" and the container dies with "no such file or directory".
+* text=auto eol=lf
+
+*.xz binary
