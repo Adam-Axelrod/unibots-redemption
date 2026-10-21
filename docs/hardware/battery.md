@@ -44,6 +44,8 @@ checked at inspection:
 
 ## Charging and care
 
+- Charge through the **DC 8.4 V port on the control board**; the battery
+  doesn't need to come out.
 - The charger's light is **red while charging, green when full**. Unplug it
   soon after it turns green.
 - Store it at about 7 V if it won't be used for a while.

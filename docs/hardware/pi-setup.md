@@ -13,8 +13,9 @@ in Docker.
 With the battery **disconnected**:
 
 1. Board's 5.1 V USB-C power output → Pi's USB-C power input.
-2. Board's USB data port → any Pi USB port. This is the micro-ROS link.
-3. Lidar → any Pi USB port. It does not go through the board.
+2. Board's Type-C serial port → any Pi USB port. This is the micro-ROS link.
+3. Lidar → the board's radar port. The ESP32 reads it and publishes `/scan`;
+   the lidar is not plugged into the Pi.
 4. Motors → Motor1-4 ports (left front, left rear, right front, right rear;
    see [esp32-board.md](esp32-board.md#motors)).
 
@@ -34,7 +35,7 @@ sudo usermod -aG docker pi
 
 Log out and back in, then check: `docker run --rm hello-world`.
 
-## 3. Install the lidar udev rule
+## 3. Clone the repo
 
 The Pi has one shared clone of the repo, at `~/Projects/unibots-redemption`.
 If it isn't there yet, clone it:
@@ -43,27 +44,19 @@ If it isn't there yet, clone it:
 git clone https://github.com/Adam-Axelrod/unibots-redemption.git ~/Projects/unibots-redemption
 ```
 
-Then:
-
-```bash
-cd ~/Projects/unibots-redemption
-sudo cp scripts/oradar.rules /etc/udev/rules.d/
-sudo udevadm control --reload && sudo udevadm trigger
-```
-
 Code is never edited on the Pi, only pulled; see
 [Sharing the `pi` account](../remote-access.md#sharing-the-pi-account).
 
-## 4. Check both devices appear
+## 4. Check the board appears
 
 ```bash
-ls -l /dev/ttyUSB0 /dev/oradar
+ls -l /dev/ttyUSB0
 ```
 
-- `/dev/ttyUSB0` is the control board.
-- `/dev/oradar` should point at `ttyACM0`, the lidar.
+That is the control board, and the only device the Pi needs: the lidar comes
+through it.
 
-If one is missing, `lsusb` lists everything plugged in, and
+If it's missing, `lsusb` lists everything plugged in, and
 `sudo dmesg | tail -20` right after plugging it in shows what the Pi made of
 it. A board that doesn't appear at all is usually a charge-only USB cable.
 
@@ -90,7 +83,7 @@ Three terminals (or three `tmux` windows):
 # 1 -- the micro-ROS agent. Leave running.
 ./scripts/start_agent.sh
 
-# 2 -- lidar driver, odom_tf and the static transforms. Leave running.
+# 2 -- odom_tf and the static transforms. Leave running.
 #      The first run builds the image and takes several minutes.
 docker compose --profile robot up robot
 
@@ -104,12 +97,14 @@ few seconds. If it just waits, reboot the board (unplug and replug its USB).
 In terminal 3, check both halves:
 
 ```bash
-ros2 topic echo /scan --once     # lidar
+ros2 topic echo /scan --once     # lidar, via the ESP32
 ros2 topic echo /odom --once     # ESP32 + agent + odom_tf
 ```
 
-If `/scan` works but `/odom` doesn't, the problem is between the Pi and the
-board: agent not running, wrong domain ID, or the board needs a reboot.
+Both come from the board. If neither appears, the problem is between the Pi
+and the board: agent not running, wrong domain ID, or the board needs a
+reboot. If `/odom` works but `/scan` doesn't, check the lidar's cable to the
+board's radar port.
 
 ## 7. Record what the board publishes
 
@@ -128,6 +123,7 @@ Fill in this table and commit it:
 |---|---|---|---|
 | `/odom_raw` | `nav_msgs/Odometry` | ? | wheel odometry; `odom_tf` republishes it as `/odom` |
 | `/cmd_vel` | `geometry_msgs/Twist` | n/a | subscribed |
+| `/scan` | `sensor_msgs/LaserScan` | ? | lidar. Yahboom's sample: 360 points at 1°, -180° to 180°, 0.12-8 m, 11 Hz |
 | ? (IMU) | `sensor_msgs/Imu` | ? | units: deg/s or rad/s? See [esp32-board.md](esp32-board.md#imu) |
 | ? (battery) | ? | ? | |
 
@@ -159,7 +155,7 @@ ros2 run robot_control square_driver
 |---|---|
 | No `/odom_raw` or `/odom`, agent waiting | board not rebooted after config, wrong `ROS_DOMAIN_ID`, or agent not running |
 | `config_robot.py` hangs or reads garbage | the agent is still running; stop it first |
-| `/dev/oradar` missing but `/dev/ttyACM0` exists | udev rule not installed (step 3) |
+| `/odom` works, `/scan` doesn't | lidar cable to the board's radar port |
 | A wheel turns the wrong way | swap that motor's M+ and M- wires |
 | Strafe makes it spin | mecanum wheels in the wrong pattern; see [chassis.md](chassis.md#wheels) |
 | Pi shows a low-voltage warning or reboots | battery flat, or the Pi is not powered from the board's 5 A output |
