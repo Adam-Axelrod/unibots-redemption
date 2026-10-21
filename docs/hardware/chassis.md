@@ -39,8 +39,8 @@ To design in from the start, all checked at inspection:
 | Rule | Requirement |
 |---|---|
 | R7 | Team number on the side, at least 50 x 50 mm |
-| R11 | An easily reached **power switch**, so a field resetter can turn the robot off |
-| R12, G17 | A physical **start button** on the robot. Starting over SSH or a remote is not allowed |
+| R11 | An easily reached **power switch**, so a field resetter can turn the robot off. The control board has one; make sure it's reachable |
+| R12, G17 | A physical **start button** on the robot. Starting over SSH or a remote is not allowed. See [esp32-board.md](esp32-board.md#buttons-switch-and-buzzer) for the options |
 | R13, R14 | Battery held securely, removable, and enclosed (see [battery.md](battery.md)) |
 | R15 | No loose or dangling wires |
 | R16 | No sharp edges or corners |
