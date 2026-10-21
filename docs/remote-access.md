@@ -1,6 +1,6 @@
 # Remote access to the Pi (Tailscale + SSH)
 
-The Pi lives on university eduroam, which blocks incoming connections, so we
+The Pi lives on King's College London eduroam, which blocks incoming connections, so we
 reach it over [Tailscale](https://tailscale.com). The Pi is on Adam's tailnet
 and **shared** with Jack and Sami, so each person keeps their own Tailscale
 account and sees only the Pi, not each other's devices.
@@ -71,49 +71,92 @@ back in.
 If the machine shows up as `rpi5-1` (because an old `rpi5` already exists),
 delete the old one and rename the new one to `rpi5` from the same `…` menu.
 
-### 1.4 Connect to eduroam
+### 1.4 Connect to eduroam (King's College London)
 
-1. Click the **Wi-Fi icon** in the top-right of the desktop and choose
-   **eduroam**.
-2. In the dialog that opens, enter the settings from your university's IT
-   "eduroam on Linux" page. They vary between universities. A typical setup is:
-   - **Authentication:** Protected EAP (PEAP)
-   - **CA certificate:** the one your university names. Don't choose "No CA
-     certificate is required" unless IT says to: without it, a fake "eduroam"
-     hotspot can collect your password.
-   - **Inner authentication:** MSCHAPv2
-   - **Username:** your full university email, e.g. `you@university.ac.uk`
-   - **Password:** your university password
-3. Click **Connect** and check that you're online with `ping -c3 tailscale.com`.
+These are King's settings, taken from King's official profile on
+[eduroam CAT](https://cat.eduroam.org) ("King's College London" → "KCL
+Eduroam"). If they stop working, check there first, or contact the King's IT
+Service Desk (8888@kcl.ac.uk, 020 7848 8888).
 
-#### Make sure it reconnects with nobody there
+| Setting | Value |
+|---|---|
+| Security | WPA & WPA2 Enterprise |
+| Authentication | Protected EAP (PEAP) |
+| Anonymous identity | *(leave blank)* |
+| Domain | `login.kcl.ac.uk` |
+| CA certificate | `/etc/NetworkManager/kcl-eduroam-ca.pem` (step 1 below) |
+| PEAP version | Automatic |
+| Inner authentication | MSCHAPv2 |
+| Username | your K number with the domain, e.g. `k1234567@kcl.ac.uk` |
+| Password | your King's password |
 
-A Wi-Fi connection made from the desktop can keep its password in the
-desktop **keyring** instead of with the system. Then, after a reboot, the Pi
-won't join eduroam until someone unlocks the keyring at the screen, and a
-headless Pi just stays offline. Check that it's stored with the system:
+#### 1. Install King's certificate
+
+The CA certificate lets the Pi check that it's talking to King's real login
+server, `login.kcl.ac.uk`. Without it, a fake "eduroam" hotspot can collect your
+King's password. The repo includes it as
+[`docs/kcl-eduroam-ca.pem`](kcl-eduroam-ca.pem): Sectigo Public Server
+Authentication Root R46 plus its intermediate, extracted from King's CAT
+profile. From your clone of the repo, copy it to where NetworkManager can
+always read it:
+
+```bash
+sudo install -m 644 docs/kcl-eduroam-ca.pem /etc/NetworkManager/kcl-eduroam-ca.pem
+```
+
+#### 2. Connect from the desktop
+
+Click the **Wi-Fi icon** in the top-right of the desktop, choose **eduroam**,
+and fill in the dialog from the table above. For the CA certificate, browse to
+`/etc/NetworkManager/kcl-eduroam-ca.pem`. Don't choose "No CA certificate is
+required". Click **Connect**.
+
+If you already connected without the certificate, that's fine: step 3 adds it.
+
+#### 3. Make it work with nobody there
+
+A Wi-Fi connection made from the desktop keeps its password in the desktop
+**keyring**, and only for the user who made it. After a reboot, the Pi won't
+join eduroam until someone unlocks the keyring at the screen, so a headless Pi
+just stays offline. King's official CAT installer does the same, so don't use
+it on the Pi without also doing this step.
+
+This command stores the password with the system instead, and applies all of
+King's settings in one go. Your password is read without echoing so that it
+doesn't end up in the shared `pi` shell history.
+
+```bash
+read -rsp "King's password: " KCL_PW; echo
+sudo nmcli connection modify eduroam \
+  802-1x.eap peap \
+  802-1x.phase2-auth mschapv2 \
+  802-1x.identity "k1234567@kcl.ac.uk" \
+  802-1x.ca-cert /etc/NetworkManager/kcl-eduroam-ca.pem \
+  802-1x.domain-match login.kcl.ac.uk \
+  802-1x.password-flags 0 \
+  802-1x.password "$KCL_PW" \
+  connection.permissions "" \
+  connection.autoconnect yes
+unset KCL_PW
+sudo nmcli connection up eduroam
+```
+
+Put your own K number in `802-1x.identity`. If the connection isn't called
+`eduroam`, use the name shown by `nmcli connection show`.
+
+Check it:
 
 ```bash
 nmcli -g 802-1x.password-flags,connection.permissions connection show eduroam
-```
-
-You want `0` followed by an empty value (shown as `0:`). If you see anything
-else, fix it. Use the connection's name in place of `eduroam` if it's
-different (`nmcli connection show` lists them).
-
-```bash
-sudo nmcli connection modify eduroam \
-  802-1x.password-flags 0 \
-  802-1x.password "YOUR_PASSWORD" \
-  connection.permissions "" \
-  connection.autoconnect yes
+# should print exactly:  0:
+ping -c3 tailscale.com
 ```
 
 **The real test:** unplug the monitor and keyboard, run `sudo reboot`, and
 `ssh rpi5` from your laptop a minute later. Tailscale starts at boot by itself,
 so if that works, the Pi will come back on its own after power cuts.
 
-> ⚠️ The password is now stored in
+> ⚠️ Your King's password is now stored in
 > `/etc/NetworkManager/system-connections/eduroam.nmconnection`, readable by
 > root. See [Trust](#trust).
 
@@ -279,9 +322,9 @@ sudo systemctl reload ssh
 ## Trust
 
 `pi` has passwordless `sudo`, so anyone who can log in has full control of
-the Pi. That includes reading the eduroam password from step 1.4, and adding
+the Pi. That includes reading the King's password stored for eduroam in step 1.4, and adding
 their own keys or accounts. Only share the Pi with people you'd trust with
-that password. Better still, check whether your university offers separate
+that password. Better still, ask the King's IT Service Desk whether they offer separate
 credentials or a separate network for devices, and use those instead of your
 personal login.
 
@@ -291,7 +334,7 @@ personal login.
 |---|---|
 | `Could not resolve hostname rpi5` | Is Tailscale running on your laptop? Try the `100.x.y.z` address from `tailscale status` in place of the name. |
 | `Connection closed by 100.x.y.z port 22`, no password prompt | Your agent offered too many keys. Add `IdentitiesOnly yes` to the `rpi5` block, wait a minute, and try again. |
-| `rpi5` shows as offline in `tailscale status` | The Pi has no internet. Check eduroam with a keyboard: `nmcli connection show --active`, and the [reconnect check](#make-sure-it-reconnects-with-nobody-there). |
+| `rpi5` shows as offline in `tailscale status` | The Pi has no internet. Check eduroam with a keyboard: `nmcli connection show --active`, and the [reconnect check](#3-make-it-work-with-nobody-there). |
 | Collaborator can't see `rpi5` | They accepted the invite with a different email from the one their Tailscale account uses. Re-share to the right address. |
 | Connection works but is slow | Eduroam is blocking direct UDP, so Tailscale is using a relay. `tailscale ping rpi5` shows `via DERP`. Fine for SSH. |
 | `Permission denied (publickey)` | Your key isn't in `~/.ssh/authorized_keys` on the Pi. Send your `~/.ssh/id_ed25519.pub` to Adam again. |
