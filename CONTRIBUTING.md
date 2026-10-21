@@ -150,16 +150,28 @@ git add -A && git commit -m "Use a parameter for the stopping distance"
 git push
 ```
 
-When it is approved, click **Squash and merge**. Your branch is deleted
-automatically.
+When it is approved, click **Squash and merge**. Squash is the only merge
+type allowed: it turns the whole branch into one commit on `main`. Your branch
+on GitHub is deleted automatically.
+
+**Adam's own PRs** can't be approved by anyone else (only Adam is a code
+owner), so he merges them with his admin override:
+
+```bash
+gh pr merge <number> --squash --admin --delete-branch
+```
 
 ### 7. Clean up and go again
 
 ```bash
 git switch main
 git pull
-git branch -d wall-follower      # delete your finished local branch
+git branch -D wall-follower      # delete your finished local branch
 ```
+
+Capital `-D`, because after a squash merge Git can't tell the branch was
+merged and `-d` refuses. Check it really is merged first: the PR on GitHub
+says **Merged**.
 
 ---
 

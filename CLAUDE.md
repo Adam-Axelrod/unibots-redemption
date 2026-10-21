@@ -134,6 +134,10 @@ docker compose exec robot bash                 # terminal 3
 ros2 run robot_control sweep_planner
 ```
 
+The board's power switch also powers the Pi: `sudo shutdown now` before
+switching off. To stop the motors without cutting power, see
+[`docs/hardware/pi-setup.md`](docs/hardware/pi-setup.md#stopping-the-motors).
+
 Check both halves are alive before blaming your code:
 
 ```bash
