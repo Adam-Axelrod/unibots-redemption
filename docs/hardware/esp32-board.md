@@ -17,7 +17,7 @@ The board that runs the motors. It came with the Yahboom MicroROS-Pi5 car.
 | Power out | 5.1 V / 5 A over USB-C, using the Pi 5's power-delivery protocol, so the Pi needs no other supply |
 | Battery sensing | built in |
 | Also | buzzer (sounds a low-battery alarm), LEDs, two spare GPIOs, WiFi and Bluetooth |
-| Link to the Pi | USB serial, shows up as `/dev/ttyUSB0` |
+| Link to the Pi | USB serial through a CP210x chip (USB ID `10c4:ea60`), shows up as `/dev/ttyUSB0`, owned by the `dialout` group |
 
 **Not** the STM32F103 "ROS V3" board Yahboom also sells for the Pi 5. Different
 firmware, different IMU, similar marketing copy.
@@ -50,6 +50,10 @@ goes to the board and the black end to the motor.
 Motors are driven with 25 kHz PWM. Yahboom recommends 7.4 V for the motors.
 They need about 3-5 V before they start turning, and the firmware skips that
 dead zone for you.
+
+Checked on 2026-10-21 with Yahboom's motor cables: all four wheels turn the
+right way going forwards, strafing and turning. Check again after moving the
+motors to our chassis ([pi-setup.md step 8](pi-setup.md#8-first-drive)).
 
 The firmware's kinematics assume **this wheel order and mecanum wheels**. If a
 wheel spins the wrong way on our chassis, swap that motor's two power wires
@@ -139,8 +143,10 @@ they cannot run at once:
 
 ## Buttons, switch and buzzer
 
-- **Power switch**: the main power switch for the whole robot, Pi included.
-  Useful for rule R11 if it's reachable once the chassis is built.
+- **Power switch**: the main power switch for the whole robot, **Pi
+  included**. Shut the Pi down before using it (see
+  [pi-setup.md](pi-setup.md#switching-off)). Useful for rule R11 if it's
+  reachable once the chassis is built.
 - **KEY1** (GPIO42) and **BOOT** (GPIO0): buttons the ESP32 can read. The
   shipped firmware does **not** publish either as a topic, and we can't change
   the firmware, so **the start button (rule R12) has to go on the Pi's GPIO**.

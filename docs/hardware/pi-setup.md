@@ -98,7 +98,16 @@ board, then prints them all back. See
 
 ## 6. Start everything
 
-Three terminals (or three `tmux` windows):
+Three terminals (or three `tmux` windows), **all on the Pi**. In each one,
+first:
+
+```bash
+ssh rpi5
+cd ~/Projects/unibots-redemption
+```
+
+The prompt should read `pi@raspberrypi:~/Projects/unibots-redemption`. If it
+shows your laptop's name, you're not on the Pi.
 
 ```bash
 # 1 -- the micro-ROS agent. Leave running.
@@ -113,7 +122,12 @@ docker compose exec robot bash
 ```
 
 In terminal 1, the agent should print that a session was established within a
-few seconds. If it just waits, reboot the board (unplug and replug its USB).
+few seconds. If it just waits, press the board's reset button.
+
+Terminal 3's `docker compose exec` only works once terminal 2 has finished
+building and started the container. Until then it says
+`service "robot" is not running`; wait for terminal 2 to show output from
+`odom_tf`.
 
 In terminal 3, check both halves:
 
@@ -168,11 +182,45 @@ Once all three look right, put it on the floor and run a pattern:
 ros2 run robot_control square_driver
 ```
 
+## Stopping the motors
+
+Without cutting power, from gentlest to bluntest:
+
+1. **Ctrl-C whatever is sending `/cmd_vel`** (a `ros2 run` node, a
+   `ros2 topic pub`). The board stops the motors by itself 0.5 s after
+   commands stop.
+2. **Send a stop**, once the sender is stopped:
+   `ros2 topic pub --once /cmd_vel geometry_msgs/Twist "{}"`
+3. **Ctrl-C the micro-ROS agent** (terminal 1). Nothing reaches the board, so
+   the motors stop within 0.5 s whatever is running.
+4. **Press the board's reset button.** Restarts only the ESP32: the motors stop
+   at once. Restart the agent afterwards.
+
+## Switching off
+
+The board's power switch powers the **Pi** too, so switching it off is pulling
+the plug on a running computer, which can corrupt the SD card. Shut the Pi down
+first:
+
+```bash
+sudo shutdown now
+```
+
+Wait for the Pi's green light to stop flashing, then flip the switch.
+
+Next time, after switching on, nothing is running: start terminals 1 and 2
+again as in [step 6](#6-start-everything). The image is already built, so it
+takes seconds, not minutes.
+
 ## If something is wrong
 
 | Symptom | Likely cause |
 |---|---|
+| `no configuration file provided: not found` | you're not in `~/Projects/unibots-redemption`, or not on the Pi at all |
+| `service "robot" is not running` | terminal 2 is still building, or isn't running |
+| A topic "does not appear to be published yet" | wait a few seconds after the agent connects, then try again |
 | No `/odom_raw` or `/odom`, agent waiting | board not rebooted after config, wrong `ROS_DOMAIN_ID`, or agent not running |
+| `config_robot.py` prints `None` for everything | missed the 5 seconds after reset; see [step 5](#5-check-the-boards-configuration) |
 | `config_robot.py` hangs or reads garbage | the agent is still running; stop it first |
 | `/odom` works, `/scan` doesn't | lidar cable to the board's radar port |
 | A wheel turns the wrong way | swap that motor's M+ and M- wires |
