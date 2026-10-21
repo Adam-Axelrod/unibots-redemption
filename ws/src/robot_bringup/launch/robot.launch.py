@@ -73,7 +73,8 @@ def generate_launch_description():
             output='screen',
         ),
 
-        # Where the sensors sit on the chassis. Measured from the Yahboom X3.
+        # Where the sensors sit on the chassis. These were measured on Yahboom's
+        # car and must be re-measured on ours: see docs/hardware/chassis.md.
         Node(
             package='tf2_ros', executable='static_transform_publisher',
             name='base_footprint_to_base_link',

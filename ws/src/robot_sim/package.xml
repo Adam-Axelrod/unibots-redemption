@@ -3,7 +3,7 @@
 <package format="3">
   <name>robot_sim</name>
   <version>0.1.0</version>
-  <description>2D simulator standing in for the Yahboom X3, with a browser visualiser.</description>
+  <description>2D simulator standing in for the real robot, with a browser visualiser.</description>
   <maintainer email="adambaxelrod@gmail.com">Adam Axelrod</maintainer>
   <license>MIT</license>
 

@@ -112,4 +112,5 @@ goes quiet for half a second. Publish continuously on a timer, not once.
 
 ## The real robot
 
-See [CLAUDE.md](CLAUDE.md) for the hardware, and how to deploy to the Pi.
+See [docs/hardware/](docs/hardware/README.md) for the hardware and first-time Pi
+setup, and [CLAUDE.md](CLAUDE.md) for how it all fits together.
