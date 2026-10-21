@@ -12,6 +12,10 @@ When it is all set up, everyone connects the same way:
 ssh rpi5
 ```
 
+The Pi itself is called `raspberrypi`, the default name, on the Pi and on
+Tailscale. `rpi5` is only a nickname that each person sets up in their own
+`~/.ssh/config`.
+
 | Part | Who | Where |
 |---|---|---|
 | [1. Set up the Pi](#1-set-up-the-pi) | Adam | on the Pi, with monitor + keyboard |
@@ -28,20 +32,13 @@ Do this with a monitor and keyboard attached. Assumes Raspberry Pi OS
 Bookworm or later, which uses NetworkManager, and that the user created in the
 setup wizard is `pi`.
 
-### 1.1 Name it `rpi5`
+### 1.1 Keep the name `raspberrypi`
 
-The hostname becomes the Tailscale name, so set it **before** joining the
-tailnet:
-
-```bash
-sudo sed -i '/^127\.0\.1\.1/d' /etc/hosts
-echo -e '127.0.1.1\trpi5' | sudo tee -a /etc/hosts > /dev/null
-sudo hostnamectl set-hostname rpi5
-```
-
-Update `/etc/hosts` first. If you rename first, every `sudo` until `/etc/hosts`
-is fixed warns `unable to resolve host rpi5`. That warning is harmless, but
-alarming.
+Don't rename the Pi. On Raspberry Pi OS Trixie, **cloud-init** sets the
+hostname from `/boot/firmware/user-data` on every boot, so a rename with
+`hostnamectl` or Raspberry Pi Configuration is undone at the next reboot.
+Leaving it as `raspberrypi` avoids that, and the `rpi5` nickname lives in
+everyone's SSH config instead.
 
 ### 1.2 Turn on SSH
 
@@ -53,29 +50,30 @@ sudo systemctl enable --now ssh
 
 ```bash
 curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up --hostname=rpi5
+sudo tailscale up --hostname=raspberrypi
 ```
 
-`--hostname=rpi5` pins the Tailscale name. Without it, Tailscale follows the
-Pi's hostname, so if that is ever changed back to `raspberrypi` (for example
-in Raspberry Pi Configuration), `ssh rpi5` stops resolving. To pin it on a Pi
-that is already on the tailnet, run `sudo tailscale set --hostname=rpi5`.
+`--hostname=raspberrypi` pins the Tailscale name, so it doesn't change even if
+the Pi's hostname does. Everyone's SSH config depends on that name. To pin it
+on a Pi that is already on the tailnet, run
+`sudo tailscale set --hostname=raspberrypi`.
 
 `tailscale up` prints a login URL. Open it, either in the Pi's browser or on
 your phone, and sign in with **your** Tailscale account. Then confirm:
 
 ```bash
-tailscale status      # rpi5 should be listed with a 100.x.y.z address
+tailscale status      # raspberrypi should be listed with a 100.x.y.z address
 tailscale ip -4
 ```
 
 In the [admin console](https://login.tailscale.com/admin/machines), find
-`rpi5`, open the `…` menu, and choose **Disable key expiry**. If you skip this,
-the Pi drops off the tailnet after about 180 days and needs a keyboard to log
-back in.
+`raspberrypi`, open the `…` menu, and choose **Disable key expiry**. If you
+skip this, the Pi drops off the tailnet after about 180 days and needs a
+keyboard to log back in.
 
-If the machine shows up as `rpi5-1` (because an old `rpi5` already exists),
-delete the old one and rename the new one to `rpi5` from the same `…` menu.
+If the machine shows up as `raspberrypi-1` (because an old `raspberrypi`
+already exists), delete the old one and rename the new one to `raspberrypi`
+from the same `…` menu.
 
 ### 1.4 Connect to eduroam (King's College London)
 
@@ -173,10 +171,10 @@ does not resolve in their tailnet. Run:
 
 ```bash
 tailscale status --json | grep -m1 DNSName
-# "DNSName": "rpi5.tail6c0787.ts.net."
+# "DNSName": "raspberrypi.tail6c0787.ts.net."
 ```
 
-Ours is **`rpi5.tail6c0787.ts.net`** (drop the trailing dot). That is what you
+Ours is **`raspberrypi.tail6c0787.ts.net`** (drop the trailing dot). That is what you
 give Jack and Sami.
 
 ---
@@ -189,13 +187,15 @@ give Jack and Sami.
 
    ```
    Host rpi5
-       HostName rpi5
+       HostName raspberrypi
        User pi
        IdentityFile ~/.ssh/id_ed25519
        IdentitiesOnly yes
    ```
 
-   `HostName rpi5` works because MagicDNS is on by default in your own tailnet.
+   `Host rpi5` is the nickname you type. `HostName raspberrypi` is the Pi's
+   Tailscale name, which works on its own because MagicDNS is on by default
+   in your own tailnet.
 
    `IdentitiesOnly yes` matters if your SSH agent holds several keys (check
    with `ssh-add -l`). Without it, SSH offers every key, the Pi counts each
@@ -228,17 +228,21 @@ For Jack and Sami. Do this before Adam does [part 4](#4-add-a-collaborator).
    It's one line starting `ssh-ed25519`. Public keys are safe to send in a
    message. Never send the file without `.pub`, which is your private key.
 
-3. When Adam's share invite arrives by email, accept it. `rpi5` then appears in
-   `tailscale status`.
-4. Add this to `~/.ssh/config`, using the full name Adam gives you:
+3. When Adam's share invite arrives by email, accept it. `raspberrypi` then
+   appears in `tailscale status`.
+4. Add this to `~/.ssh/config`:
 
    ```
    Host rpi5
-       HostName rpi5.tail6c0787.ts.net
+       HostName raspberrypi.tail6c0787.ts.net
        User pi
        IdentityFile ~/.ssh/id_ed25519
        IdentitiesOnly yes
    ```
+
+   `rpi5` is just the nickname you type. `HostName` must be the Pi's full
+   Tailscale name, because a shared device's short name doesn't resolve in
+   your tailnet.
 
 5. Once Adam says your key is added, log in:
 
@@ -270,7 +274,7 @@ Use `>>`, not `>`: a single `>` replaces the file and locks everyone else out.
 ### 4.2 Share the Pi with them
 
 1. In the [admin console](https://login.tailscale.com/admin/machines), open
-   `rpi5` → `…` → **Share…**
+   `raspberrypi` → `…` → **Share…**
 2. Invite them **by email**, using the address they sign in to Tailscale with.
 3. Send them the Pi's full name from [step 1.5](#15-note-your-pis-full-tailscale-name).
 
@@ -338,9 +342,10 @@ personal login.
 
 | Symptom | Check |
 |---|---|
-| `Could not resolve hostname rpi5` | Is Tailscale running on your laptop? Does `tailscale status` list the Pi as `rpi5`? If it shows `raspberrypi`, the hostname changed: `ssh pi@100.x.y.z` and redo [1.1](#11-name-it-rpi5) and `sudo tailscale set --hostname=rpi5`. |
+| `Could not resolve hostname raspberrypi` | Is Tailscale running on your laptop? Does `tailscale status` list the Pi as `raspberrypi`? If it shows another name, `ssh pi@100.x.y.z` and run `sudo tailscale set --hostname=raspberrypi`. |
+| `Could not resolve hostname rpi5` | Your `~/.ssh/config` has no `Host rpi5` block, or it has a typo. `rpi5` only exists there. |
 | `Connection closed by 100.x.y.z port 22`, no password prompt | Your agent offered too many keys. Add `IdentitiesOnly yes` to the `rpi5` block, wait a minute, and try again. |
-| `rpi5` shows as offline in `tailscale status` | The Pi has no internet. Check eduroam with a keyboard: `nmcli connection show --active`, and the [reconnect check](#3-make-it-work-with-nobody-there). |
-| Collaborator can't see `rpi5` | They accepted the invite with a different email from the one their Tailscale account uses. Re-share to the right address. |
-| Connection works but is slow | Eduroam is blocking direct UDP, so Tailscale is using a relay. `tailscale ping rpi5` shows `via DERP`. Fine for SSH. |
+| `raspberrypi` shows as offline in `tailscale status` | The Pi has no internet. Check eduroam with a keyboard: `nmcli connection show --active`, and the [reconnect check](#3-make-it-work-with-nobody-there). |
+| Collaborator can't see `raspberrypi` | They accepted the invite with a different email from the one their Tailscale account uses. Re-share to the right address. |
+| Connection works but is slow | Eduroam is blocking direct UDP, so Tailscale is using a relay. `tailscale ping raspberrypi` shows `via DERP`. Fine for SSH. |
 | `Permission denied (publickey)` | Your key isn't in `~/.ssh/authorized_keys` on the Pi. Send your `~/.ssh/id_ed25519.pub` to Adam again. |
