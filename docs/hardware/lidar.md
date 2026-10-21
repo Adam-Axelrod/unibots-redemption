@@ -26,9 +26,10 @@ From Yahboom's *Introduction to lidar*:
 | Topic | `/scan`, `sensor_msgs/LaserScan` |
 | Frame | `laser_frame` |
 
-Yahboom's sample firmware publishes **360 points at 1° spacing, from -180° to
-180°, range 0.12-8 m, at 11 Hz**. The shipped firmware probably matches; confirm
-it during [Pi setup](pi-setup.md#7-record-what-the-board-publishes).
+The board publishes **360 points at 1° spacing, from -180° to 180°, range
+0.12-8 m, at about 12.5 Hz** (checked on our board, firmware 2.1.0). A
+direction with no return reads `0`, which is below `range_min`, so filter on
+`range_min`/`range_max` as `sweep_planner` does.
 
 Two things follow from that:
 

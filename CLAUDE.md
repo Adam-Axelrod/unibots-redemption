@@ -77,8 +77,11 @@ domain ID, WiFi.
 The micro-ROS agent uses **921600**. Same cable, two protocols, mutually
 exclusive — stop the agent before configuring, and reboot the board afterwards.
 
-⚠️ The IMU's units in the shipped firmware are unconfirmed. Yahboom's sample
-code publishes deg/s and g, not ROS's rad/s and m/s². Check before fusing it.
+The board publishes `/scan`, `/imu` (SI units, but `orientation` is never
+filled in), `/odom_raw` and `/battery` (volts x 10), and listens on
+`/cmd_vel`, `/beep`, `/servo_s1` and `/servo_s2`. There is no button topic, so
+the start button must go on the Pi's GPIO. Full table:
+[`docs/hardware/esp32-board.md`](docs/hardware/esp32-board.md#topics).
 
 ### 2. micro-ROS agent (on the Pi)
 
@@ -130,6 +133,10 @@ docker compose --profile robot up robot        # terminal 2: TFs + odom_tf
 docker compose exec robot bash                 # terminal 3
 ros2 run robot_control sweep_planner
 ```
+
+The board's power switch also powers the Pi: `sudo shutdown now` before
+switching off. To stop the motors without cutting power, see
+[`docs/hardware/pi-setup.md`](docs/hardware/pi-setup.md#stopping-the-motors).
 
 Check both halves are alive before blaming your code:
 

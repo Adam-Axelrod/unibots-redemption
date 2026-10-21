@@ -17,7 +17,7 @@ The board that runs the motors. It came with the Yahboom MicroROS-Pi5 car.
 | Power out | 5.1 V / 5 A over USB-C, using the Pi 5's power-delivery protocol, so the Pi needs no other supply |
 | Battery sensing | built in |
 | Also | buzzer (sounds a low-battery alarm), LEDs, two spare GPIOs, WiFi and Bluetooth |
-| Link to the Pi | USB serial, shows up as `/dev/ttyUSB0` |
+| Link to the Pi | USB serial through a CP210x chip (USB ID `10c4:ea60`), shows up as `/dev/ttyUSB0`, owned by the `dialout` group |
 
 **Not** the STM32F103 "ROS V3" board Yahboom also sells for the Pi 5. Different
 firmware, different IMU, similar marketing copy.
@@ -51,22 +51,41 @@ Motors are driven with 25 kHz PWM. Yahboom recommends 7.4 V for the motors.
 They need about 3-5 V before they start turning, and the firmware skips that
 dead zone for you.
 
+Checked on 2026-10-21 with Yahboom's motor cables: all four wheels turn the
+right way going forwards, strafing and turning. Check again after moving the
+motors to our chassis ([pi-setup.md step 8](pi-setup.md#8-first-drive)).
+
 The firmware's kinematics assume **this wheel order and mecanum wheels**. If a
 wheel spins the wrong way on our chassis, swap that motor's two power wires
 (M+ and M-) rather than changing code.
 
+## Topics
+
+What firmware 2.1.0 publishes and listens to, checked on our board:
+
+| Topic | Type | Direction | Rate | Notes |
+|---|---|---|---|---|
+| `/scan` | `sensor_msgs/LaserScan` | board → Pi | 12.5 Hz | lidar; see [lidar.md](lidar.md) |
+| `/imu` | `sensor_msgs/Imu` | board → Pi | 24 Hz | SI units; see [esp32-board.md](esp32-board.md#imu) |
+| `/odom_raw` | `nav_msgs/Odometry` | board → Pi | 11 Hz | wheel odometry; `odom_tf` republishes it as `/odom` |
+| `/battery` | `std_msgs/UInt16` | board → Pi | 1 Hz | battery voltage x 10, e.g. `75` = 7.5 V |
+| `/cmd_vel` | `geometry_msgs/Twist` | Pi → board | | drive commands; stops after 0.5 s without one |
+| `/beep` | `std_msgs/UInt16` | Pi → board | | buzzer |
+| `/servo_s1`, `/servo_s2` | `std_msgs/Int32` | Pi → board | | servo ports S1 and S2 |
+
 ## IMU
 
-ICM42670P on I2C (SCL GPIO39, SDA GPIO40, 400 kHz, interrupt on GPIO41), read
-every 10 ms. Published as a `sensor_msgs/Imu` with `frame_id` `imu_frame`.
-The topic name in the shipped firmware is not yet confirmed; see
-[pi-setup.md](pi-setup.md#7-record-what-the-board-publishes).
+ICM42670P on I2C (SCL GPIO39, SDA GPIO40, 400 kHz, interrupt on GPIO41).
+Published on `/imu` as `sensor_msgs/Imu`, 24 Hz, `frame_id` `imu_frame`.
 
-⚠️ **Check the units before using it.** In Yahboom's sample code, angular
-velocity is in **degrees/s** and acceleration in **g**. ROS expects rad/s and
-m/s². The shipped firmware may convert them, or may not. Rotate the robot by
-hand: a quarter turn per second should read about 1.57 if it's rad/s, or 90 if
-it's degrees/s.
+**Units are standard ROS units**, checked on our board: acceleration in m/s²
+(about 9.8 on `z` at rest) and angular velocity in rad/s, anticlockwise
+positive seen from above, as ROS expects. (Yahboom's sample code uses deg/s and
+g; the shipped firmware converts.)
+
+`angular_velocity` and `linear_acceleration` are filled in. `orientation` is
+not: it is always `w: 1`, and all covariances are 0. Work out heading by
+integrating `angular_velocity.z`, not from `orientation`.
 
 With no magnetometer it cannot give an absolute compass heading, only how fast
 the robot is turning. That is still the best fix for mecanum wheel slip: wheel
@@ -74,19 +93,22 @@ odometry is good for distance and poor for heading.
 
 ## Servos
 
-Two PWM ports, S1 and S2. Their centre offsets are stored on the board (see
+Two PWM ports, S1 and S2, driven by publishing to `/servo_s1` and
+`/servo_s2` (`std_msgs/Int32`, most likely the angle in degrees; check before
+fitting the mechanism). Their centre offsets are stored on the board (see
 [Configuration](#configuration)). Two may not be enough for the collection
 mechanism; more would need a separate servo driver or the Pi's GPIO.
 
 ## Battery sensing
 
 A 10 kΩ / 3.3 kΩ divider into GPIO3 (ADC1 channel 2). Battery voltage is the
-pin voltage x 4.03. Whether the shipped firmware publishes it as a topic is not
-yet confirmed. See [battery.md](battery.md) for what the numbers mean.
+pin voltage x 4.03. Published on `/battery` once a second, as volts x 10. See
+[battery.md](battery.md) for what the numbers mean.
 
 ## Firmware
 
-Ships as a prebuilt `.bin`. We have **no source to modify** and almost never
+Ships as a prebuilt `.bin`. Ours is **version 2.1.0** (`config_robot.py`
+prints it). We have **no source to modify** and almost never
 reflash it. What we change is its stored configuration.
 
 The firmware runs **micro-ROS**, a cut-down ROS client compiled into it. It is
@@ -111,21 +133,25 @@ protocol. The micro-ROS agent uses **921600**. Same cable, two protocols, and
 they cannot run at once:
 
 1. Stop the micro-ROS agent.
-2. Edit the values at the bottom of `config_robot.py`, then run it on the Pi:
-   `python3 scripts/config_robot.py` (needs `pyserial`).
-3. **Reboot the board** (unplug and replug, or its reset button). New settings
-   only take effect after a reboot.
-4. Start the agent again.
+2. Edit the values at the bottom of `config_robot.py`.
+3. Press the board's **reset** button, then run `python3 scripts/config_robot.py`
+   on the Pi **within 5 seconds** (needs `pyserial`). The board only accepts
+   configuration in that window, while its MCU LED flashes every 300 ms. If
+   every value prints as `None`, it missed the window: nothing was written.
+4. Press **reset** again. New settings only take effect after a reboot.
+5. Start the agent again.
 
 ## Buttons, switch and buzzer
 
-- **Power switch**: the main power switch for the whole robot, Pi included.
-  Useful for rule R11 if it's reachable once the chassis is built.
-- **KEY1** (GPIO42) and **BOOT** (GPIO0): buttons the ESP32 can read. KEY1 is
-  a natural start button for rule R12, but only if the shipped firmware
-  publishes it as a topic, which is unconfirmed. Since we can't change the
-  firmware, the start button may have to go on the Pi's GPIO instead.
+- **Power switch**: the main power switch for the whole robot, **Pi
+  included**. Shut the Pi down before using it (see
+  [pi-setup.md](pi-setup.md#switching-off)). Useful for rule R11 if it's
+  reachable once the chassis is built.
+- **KEY1** (GPIO42) and **BOOT** (GPIO0): buttons the ESP32 can read. The
+  shipped firmware does **not** publish either as a topic, and we can't change
+  the firmware, so **the start button (rule R12) has to go on the Pi's GPIO**.
 - **Buzzer**: an active buzzer, used by the firmware as a low-battery alarm.
+  We can also sound it through `/beep`.
 
 ## Pin map
 

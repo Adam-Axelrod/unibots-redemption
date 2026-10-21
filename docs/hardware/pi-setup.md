@@ -76,17 +76,38 @@ mode**. It probably already is; the setup script makes sure.
 
 ```bash
 sudo apt install python3-serial
-python3 scripts/config_robot.py
 ```
 
-This **writes** the values at the bottom of `config_robot.py` to the board and
-then prints them all back. Read the printout. Then **reboot the board** (unplug
-and replug its USB, or press its reset button). See
+The board only listens for configuration for **5 seconds after a reset**
+(its MCU LED flashes every 300 ms); after that it's in micro-ROS mode and
+ignores the script. So type the command first, then:
+
+1. Press the board's **reset** button.
+2. Within 5 seconds, run:
+   ```bash
+   python3 scripts/config_robot.py
+   ```
+3. Read the printout: `car_type: 1`, `domain_id: 20` and
+   `ros_serial_baudrate: 921600`. If every value is `None`, the board didn't
+   answer, and nothing was written: you missed the 5 seconds, so try again.
+4. Press **reset** again to load the new settings.
+
+The script **writes** the values at the bottom of `config_robot.py` to the
+board, then prints them all back. See
 [esp32-board.md](esp32-board.md#configuration) for what each setting means.
 
 ## 6. Start everything
 
-Three terminals (or three `tmux` windows):
+Three terminals (or three `tmux` windows), **all on the Pi**. In each one,
+first:
+
+```bash
+ssh rpi5
+cd ~/Projects/unibots-redemption
+```
+
+The prompt should read `pi@raspberrypi:~/Projects/unibots-redemption`. If it
+shows your laptop's name, you're not on the Pi.
 
 ```bash
 # 1 -- the micro-ROS agent. Leave running.
@@ -101,7 +122,12 @@ docker compose exec robot bash
 ```
 
 In terminal 1, the agent should print that a session was established within a
-few seconds. If it just waits, reboot the board (unplug and replug its USB).
+few seconds. If it just waits, press the board's reset button.
+
+Terminal 3's `docker compose exec` only works once terminal 2 has finished
+building and started the container. Until then it says
+`service "robot" is not running`; wait for terminal 2 to show output from
+`odom_tf`.
 
 In terminal 3, check both halves:
 
@@ -117,27 +143,25 @@ board's radar port.
 
 ## 7. Record what the board publishes
 
-We don't yet know exactly what the shipped firmware publishes. In terminal 3:
+In terminal 3, `ros2 topic list` should show these. This is what firmware
+2.1.0 had on 2026-10-21; if a reflashed board differs, update this table.
 
-```bash
-ros2 topic list
-ros2 topic info /imu             # or whatever the IMU topic turns out to be
-ros2 topic hz /imu
-ros2 topic echo /imu --once
-```
+| Topic | Type | Direction | Rate | Notes |
+|---|---|---|---|---|
+| `/scan` | `sensor_msgs/LaserScan` | board → Pi | 12.5 Hz | lidar; see [lidar.md](lidar.md) |
+| `/imu` | `sensor_msgs/Imu` | board → Pi | 24 Hz | SI units; see [esp32-board.md](esp32-board.md#imu) |
+| `/odom_raw` | `nav_msgs/Odometry` | board → Pi | 11 Hz | wheel odometry; `odom_tf` republishes it as `/odom` |
+| `/battery` | `std_msgs/UInt16` | board → Pi | 1 Hz | battery voltage x 10, e.g. `75` = 7.5 V |
+| `/cmd_vel` | `geometry_msgs/Twist` | Pi → board | | drive commands; stops after 0.5 s without one |
+| `/beep` | `std_msgs/UInt16` | Pi → board | | buzzer |
+| `/servo_s1`, `/servo_s2` | `std_msgs/Int32` | Pi → board | | servo ports S1 and S2 |
 
-Fill in this table and commit it:
+Plus `/odom`, `/tf` and `/tf_static` from the robot container. `ros2 topic hz
+<topic>` checks a rate, `ros2 topic echo <topic> --once` shows one message.
 
-| Topic | Type | Rate | Notes |
-|---|---|---|---|
-| `/odom_raw` | `nav_msgs/Odometry` | ? | wheel odometry; `odom_tf` republishes it as `/odom` |
-| `/cmd_vel` | `geometry_msgs/Twist` | n/a | subscribed |
-| `/scan` | `sensor_msgs/LaserScan` | ? | lidar. Yahboom's sample: 360 points at 1°, -180° to 180°, 0.12-8 m, 11 Hz |
-| ? (IMU) | `sensor_msgs/Imu` | ? | units: deg/s or rad/s? See [esp32-board.md](esp32-board.md#imu) |
-| ? (battery) | ? | ? | |
-
-Then update [esp32-board.md](esp32-board.md) and the
-[still-unknown list](README.md#still-unknown).
+The topics can take a few seconds to appear after the agent connects. If
+`ros2 topic echo` says a topic "does not appear to be published yet", wait
+and try again.
 
 ## 8. First drive
 
@@ -158,11 +182,45 @@ Once all three look right, put it on the floor and run a pattern:
 ros2 run robot_control square_driver
 ```
 
+## Stopping the motors
+
+Without cutting power, from gentlest to bluntest:
+
+1. **Ctrl-C whatever is sending `/cmd_vel`** (a `ros2 run` node, a
+   `ros2 topic pub`). The board stops the motors by itself 0.5 s after
+   commands stop.
+2. **Send a stop**, once the sender is stopped:
+   `ros2 topic pub --once /cmd_vel geometry_msgs/Twist "{}"`
+3. **Ctrl-C the micro-ROS agent** (terminal 1). Nothing reaches the board, so
+   the motors stop within 0.5 s whatever is running.
+4. **Press the board's reset button.** Restarts only the ESP32: the motors stop
+   at once. Restart the agent afterwards.
+
+## Switching off
+
+The board's power switch powers the **Pi** too, so switching it off is pulling
+the plug on a running computer, which can corrupt the SD card. Shut the Pi down
+first:
+
+```bash
+sudo shutdown now
+```
+
+Wait for the Pi's green light to stop flashing, then flip the switch.
+
+Next time, after switching on, nothing is running: start terminals 1 and 2
+again as in [step 6](#6-start-everything). The image is already built, so it
+takes seconds, not minutes.
+
 ## If something is wrong
 
 | Symptom | Likely cause |
 |---|---|
+| `no configuration file provided: not found` | you're not in `~/Projects/unibots-redemption`, or not on the Pi at all |
+| `service "robot" is not running` | terminal 2 is still building, or isn't running |
+| A topic "does not appear to be published yet" | wait a few seconds after the agent connects, then try again |
 | No `/odom_raw` or `/odom`, agent waiting | board not rebooted after config, wrong `ROS_DOMAIN_ID`, or agent not running |
+| `config_robot.py` prints `None` for everything | missed the 5 seconds after reset; see [step 5](#5-check-the-boards-configuration) |
 | `config_robot.py` hangs or reads garbage | the agent is still running; stop it first |
 | `/odom` works, `/scan` doesn't | lidar cable to the board's radar port |
 | A wheel turns the wrong way | swap that motor's M+ and M- wires |

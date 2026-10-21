@@ -291,6 +291,18 @@ ssh rpi5 'echo "ssh-ed25519 AAAA...their key... jack@laptop" >> ~/.ssh/authorize
 
 Use `>>`, not `>`: a single `>` replaces the file and locks everyone else out.
 
+The key must stay on **one line, with a space after `ssh-ed25519`**. If that
+space is lost in copying, the Pi silently ignores the key and asks for the
+password instead. The text after the key is just a label: keys made on Windows
+often have none, so add the person's name, as above, so you can tell the keys
+apart later. To check every key's type and label:
+
+```bash
+ssh rpi5 'cut -d" " -f1,3 ~/.ssh/authorized_keys'
+```
+
+Each line should start with exactly `ssh-ed25519`, then a name.
+
 ### 4.2 Share the Pi with them
 
 1. In the [admin console](https://login.tailscale.com/admin/machines), open
@@ -380,3 +392,5 @@ personal login.
 | Collaborator can't see `raspberrypi` | They accepted the invite with a different email from the one their Tailscale account uses. Re-share to the right address. |
 | Connection works but is slow | Eduroam is blocking direct UDP, so Tailscale is using a relay. `tailscale ping raspberrypi` shows `via DERP`. Fine for SSH. |
 | `Permission denied (publickey)` | Your key isn't in `~/.ssh/authorized_keys` on the Pi. Send your `~/.ssh/id_ed25519.pub` to Adam again. |
+| Asked for `pi@raspberrypi's password` every time | The Pi isn't accepting your key: it's missing from `~/.ssh/authorized_keys` or was mangled when pasted. Adam: run the check in [4.1](#41-add-their-key-to-the-pi). |
+| Asked for `Enter passphrase for key` | The key is working; you set a passphrase when making it. Load it once per session with `ssh-add`, or remove it with `ssh-keygen -p`. |
