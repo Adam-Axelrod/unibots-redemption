@@ -225,6 +225,15 @@ For Jack and Sami. Do this before Adam does [part 4](#4-add-a-collaborator).
    cat ~/.ssh/id_ed25519.pub
    ```
 
+   On Windows, use **PowerShell**, not Command Prompt (which knows neither
+   `cat` nor `~`). The `||` above is a syntax error in the PowerShell that
+   ships with Windows, so use this instead:
+
+   ```powershell
+   if (!(Test-Path ~/.ssh/id_ed25519.pub)) { ssh-keygen -t ed25519 }   # make a key if you have none
+   cat ~/.ssh/id_ed25519.pub
+   ```
+
    It's one line starting `ssh-ed25519`. Public keys are safe to send in a
    message. Never send the file without `.pub`, which is your private key.
 
@@ -243,6 +252,17 @@ For Jack and Sami. Do this before Adam does [part 4](#4-add-a-collaborator).
    `rpi5` is just the nickname you type. `HostName` must be the Pi's full
    Tailscale name, because a shared device's short name doesn't resolve in
    your tailnet.
+
+   On Windows there is no `nano`. Open the file in Notepad from PowerShell,
+   creating it first, otherwise Notepad saves it as `config.txt` and `ssh`
+   ignores it:
+
+   ```powershell
+   if (!(Test-Path ~/.ssh/config)) { New-Item ~/.ssh/config }
+   notepad ~/.ssh/config
+   ```
+
+   Or, with VS Code installed, `code ~/.ssh/config`.
 
 5. Once Adam says your key is added, log in:
 
