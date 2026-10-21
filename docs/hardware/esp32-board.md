@@ -111,11 +111,13 @@ protocol. The micro-ROS agent uses **921600**. Same cable, two protocols, and
 they cannot run at once:
 
 1. Stop the micro-ROS agent.
-2. Edit the values at the bottom of `config_robot.py`, then run it on the Pi:
-   `python3 scripts/config_robot.py` (needs `pyserial`).
-3. **Reboot the board** (unplug and replug, or its reset button). New settings
-   only take effect after a reboot.
-4. Start the agent again.
+2. Edit the values at the bottom of `config_robot.py`.
+3. Press the board's **reset** button, then run `python3 scripts/config_robot.py`
+   on the Pi **within 5 seconds** (needs `pyserial`). The board only accepts
+   configuration in that window, while its MCU LED flashes every 300 ms. If
+   every value prints as `None`, it missed the window: nothing was written.
+4. Press **reset** again. New settings only take effect after a reboot.
+5. Start the agent again.
 
 ## Buttons, switch and buzzer
 
