@@ -35,6 +35,10 @@ sudo hostnamectl set-hostname rpi5
 sudo sed -i 's/^127\.0\.1\.1.*/127.0.1.1\trpi5/' /etc/hosts
 ```
 
+The second command prints `sudo: unable to resolve host rpi5`. That is
+expected and harmless: the Pi has its new name but `/etc/hosts` does not yet,
+so sudo complains once and then runs the command, which fixes the entry.
+
 ### 1.2 Turn on SSH
 
 ```bash
@@ -97,11 +101,11 @@ does not resolve in their tailnet. Run:
 
 ```bash
 tailscale status --json | grep -m1 DNSName
-# "DNSName": "rpi5.tail1234ab.ts.net."
+# "DNSName": "rpi5.tail6c0787.ts.net."
 ```
 
-`rpi5.tail1234ab.ts.net` (without the trailing dot) is what you give Jack and
-Sami.
+Ours is **`rpi5.tail6c0787.ts.net`** (drop the trailing dot). That is what you
+give Jack and Sami.
 
 ---
 
@@ -166,7 +170,7 @@ run `sudo deluser --remove-home jack` on the Pi.
 ## 4. Collaborator's laptop
 
 For Jack and Sami. You need three things from Adam: the share invite, the Pi's
-full name (like `rpi5.tail1234ab.ts.net`), and your temporary password.
+full name (`rpi5.tail6c0787.ts.net`), and your temporary password.
 
 1. Install Tailscale from <https://tailscale.com/download> and sign in with
    **your own** account.
@@ -177,7 +181,7 @@ full name (like `rpi5.tail1234ab.ts.net`), and your temporary password.
 
    ```
    Host rpi5
-       HostName rpi5.tail1234ab.ts.net
+       HostName rpi5.tail6c0787.ts.net
        User jack
    ```
 
