@@ -36,16 +36,22 @@ Log out and back in, then check: `docker run --rm hello-world`.
 
 ## 3. Install the lidar udev rule
 
-From the repo on the Pi:
+The Pi has one shared clone of the repo, at `~/Projects/unibots-redemption`.
+If it isn't there yet, clone it:
 
 ```bash
-git clone https://github.com/Adam-Axelrod/unibots-redemption.git ~/<your-name>/unibots-redemption
-cd ~/<your-name>/unibots-redemption
+git clone https://github.com/Adam-Axelrod/unibots-redemption.git ~/Projects/unibots-redemption
+```
+
+Then:
+
+```bash
+cd ~/Projects/unibots-redemption
 sudo cp scripts/oradar.rules /etc/udev/rules.d/
 sudo udevadm control --reload && sudo udevadm trigger
 ```
 
-One clone per person; see
+Code is never edited on the Pi, only pulled; see
 [Sharing the `pi` account](../remote-access.md#sharing-the-pi-account).
 
 ## 4. Check both devices appear
