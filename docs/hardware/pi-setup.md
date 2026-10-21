@@ -129,27 +129,25 @@ board's radar port.
 
 ## 7. Record what the board publishes
 
-We don't yet know exactly what the shipped firmware publishes. In terminal 3:
+In terminal 3, `ros2 topic list` should show these. This is what firmware
+2.1.0 had on 2026-10-21; if a reflashed board differs, update this table.
 
-```bash
-ros2 topic list
-ros2 topic info /imu             # or whatever the IMU topic turns out to be
-ros2 topic hz /imu
-ros2 topic echo /imu --once
-```
+| Topic | Type | Direction | Rate | Notes |
+|---|---|---|---|---|
+| `/scan` | `sensor_msgs/LaserScan` | board → Pi | 12.5 Hz | lidar; see [lidar.md](lidar.md) |
+| `/imu` | `sensor_msgs/Imu` | board → Pi | 24 Hz | SI units; see [esp32-board.md](esp32-board.md#imu) |
+| `/odom_raw` | `nav_msgs/Odometry` | board → Pi | 11 Hz | wheel odometry; `odom_tf` republishes it as `/odom` |
+| `/battery` | `std_msgs/UInt16` | board → Pi | 1 Hz | battery voltage x 10, e.g. `75` = 7.5 V |
+| `/cmd_vel` | `geometry_msgs/Twist` | Pi → board | | drive commands; stops after 0.5 s without one |
+| `/beep` | `std_msgs/UInt16` | Pi → board | | buzzer |
+| `/servo_s1`, `/servo_s2` | `std_msgs/Int32` | Pi → board | | servo ports S1 and S2 |
 
-Fill in this table and commit it:
+Plus `/odom`, `/tf` and `/tf_static` from the robot container. `ros2 topic hz
+<topic>` checks a rate, `ros2 topic echo <topic> --once` shows one message.
 
-| Topic | Type | Rate | Notes |
-|---|---|---|---|
-| `/odom_raw` | `nav_msgs/Odometry` | ? | wheel odometry; `odom_tf` republishes it as `/odom` |
-| `/cmd_vel` | `geometry_msgs/Twist` | n/a | subscribed |
-| `/scan` | `sensor_msgs/LaserScan` | ? | lidar. Yahboom's sample: 360 points at 1°, -180° to 180°, 0.12-8 m, 11 Hz |
-| ? (IMU) | `sensor_msgs/Imu` | ? | units: deg/s or rad/s? See [esp32-board.md](esp32-board.md#imu) |
-| ? (battery) | ? | ? | |
-
-Then update [esp32-board.md](esp32-board.md) and the
-[still-unknown list](README.md#still-unknown).
+The topics can take a few seconds to appear after the agent connects. If
+`ros2 topic echo` says a topic "does not appear to be published yet", wait
+and try again.
 
 ## 8. First drive
 

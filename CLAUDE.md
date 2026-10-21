@@ -77,8 +77,11 @@ domain ID, WiFi.
 The micro-ROS agent uses **921600**. Same cable, two protocols, mutually
 exclusive — stop the agent before configuring, and reboot the board afterwards.
 
-⚠️ The IMU's units in the shipped firmware are unconfirmed. Yahboom's sample
-code publishes deg/s and g, not ROS's rad/s and m/s². Check before fusing it.
+The board publishes `/scan`, `/imu` (SI units, but `orientation` is never
+filled in), `/odom_raw` and `/battery` (volts x 10), and listens on
+`/cmd_vel`, `/beep`, `/servo_s1` and `/servo_s2`. There is no button topic, so
+the start button must go on the Pi's GPIO. Full table:
+[`docs/hardware/esp32-board.md`](docs/hardware/esp32-board.md#topics).
 
 ### 2. micro-ROS agent (on the Pi)
 
