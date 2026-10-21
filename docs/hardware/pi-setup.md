@@ -76,12 +76,24 @@ mode**. It probably already is; the setup script makes sure.
 
 ```bash
 sudo apt install python3-serial
-python3 scripts/config_robot.py
 ```
 
-This **writes** the values at the bottom of `config_robot.py` to the board and
-then prints them all back. Read the printout. Then **reboot the board** (unplug
-and replug its USB, or press its reset button). See
+The board only listens for configuration for **5 seconds after a reset**
+(its MCU LED flashes every 300 ms); after that it's in micro-ROS mode and
+ignores the script. So type the command first, then:
+
+1. Press the board's **reset** button.
+2. Within 5 seconds, run:
+   ```bash
+   python3 scripts/config_robot.py
+   ```
+3. Read the printout: `car_type: 1`, `domain_id: 20` and
+   `ros_serial_baudrate: 921600`. If every value is `None`, the board didn't
+   answer, and nothing was written: you missed the 5 seconds, so try again.
+4. Press **reset** again to load the new settings.
+
+The script **writes** the values at the bottom of `config_robot.py` to the
+board, then prints them all back. See
 [esp32-board.md](esp32-board.md#configuration) for what each setting means.
 
 ## 6. Start everything
