@@ -17,7 +17,7 @@ setup(
     zip_safe=True,
     maintainer='Adam Axelrod',
     maintainer_email='adambaxelrod@gmail.com',
-    description='2D simulator standing in for the Yahboom X3, with a browser visualiser.',
+    description='2D simulator standing in for the real robot, with a browser visualiser.',
     license='MIT',
     entry_points={
         'console_scripts': [

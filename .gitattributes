@@ -7,3 +7,4 @@
 * text=auto eol=lf
 
 *.xz binary
+*.pdf binary

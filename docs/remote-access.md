@@ -315,20 +315,31 @@ on your tailnet is visible to them.
 Everyone is the same user, so anything one person changes, everyone gets. Two
 rules keep that from causing trouble.
 
-**One clone each.** Never work in someone else's checkout. Switching branches
-or leaving uncommitted changes there changes the code under them too. Keep
-your own copy in a folder named after you:
+**One shared clone, and never edit code on the Pi.** The repo lives at
+`~/Projects/unibots-redemption`. Make changes on your laptop, push them to a
+branch, and pull that branch on the Pi:
 
 ```bash
-mkdir -p ~/jack && cd ~/jack
-git clone https://github.com/Adam-Axelrod/unibots-redemption.git
-cd unibots-redemption
-git config user.name "Jack ..."         # no --global: this clone only
-git config user.email "jack@..."
+cd ~/Projects/unibots-redemption
+git status                  # check what's checked out, and that nothing is edited
+git fetch
+git switch <branch>
+git pull --ff-only
 ```
 
-Without the two `git config` lines, commits made on the Pi are credited to
-whoever set the global name.
+Whatever branch is checked out is what the robot runs, for everyone. Switch
+back to `main` when you're done, and always before a match.
+
+`--ff-only` refuses to pull if someone did edit a file on the Pi, instead of
+quietly merging. If it refuses, `git status` shows what was changed: move the
+change to your laptop and commit it there, then discard it on the Pi with
+`git restore <file>`.
+
+After pulling, rebuild. Restarting `docker compose --profile robot up robot`
+does it for you. In an already running container, run
+`colcon build --symlink-install` yourself: edits to existing Python files are
+picked up without it, but new nodes and changes to `setup.py` or launch files
+are not.
 
 **Ask before changing shared things.** `~/.bashrc`, installed packages,
 system settings and anything under `/etc` affect everyone. Mention it in the
