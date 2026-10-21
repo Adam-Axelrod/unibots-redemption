@@ -2,11 +2,14 @@
 
 Before this will do anything, the micro-ROS agent must be running in another
 terminal (see scripts/start_agent.sh) -- that is what puts the ESP32's topics
-on the ROS graph.
+on the ROS graph, /scan included: the lidar plugs into the ESP32 board, which
+publishes /scan itself.
 
     ros2 launch robot_bringup robot.launch.py
-    ros2 launch robot_bringup robot.launch.py lidar:=false       # no lidar
-    ros2 launch robot_bringup robot.launch.py lidar_port:=/dev/ttyACM0
+
+Only if the lidar is plugged into the Pi instead (see docs/hardware/lidar.md):
+    ros2 launch robot_bringup robot.launch.py lidar:=true
+    ros2 launch robot_bringup robot.launch.py lidar:=true lidar_port:=/dev/ttyACM0
 
 Check it worked:
     ros2 topic echo /scan --once     # lidar is alive
@@ -25,15 +28,19 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument(
-            'lidar', default_value='true',
-            description='start the MS200 lidar driver'),
+            'lidar', default_value='false',
+            description='start the Pi-side MS200 driver. Leave false when '
+                        'the lidar is plugged into the ESP32 board, which '
+                        'publishes /scan itself'),
         DeclareLaunchArgument(
             'lidar_port', default_value='/dev/oradar',
             description='lidar serial device. /dev/oradar is the symlink made '
                         'by oradar.rules; fall back to /dev/ttyACM0 if the '
                         'udev rule is not installed'),
 
-        # Oradar/Orbbec MS200.
+        # Oradar/Orbbec MS200, for when it is plugged into the Pi over USB.
+        # Off by default: ours plugs into the ESP32 board, which publishes
+        # /scan, and running both would put two publishers on /scan.
         #
         # We start the driver's executable directly instead of including its own
         # ms200_scan.launch.py, for two reasons:

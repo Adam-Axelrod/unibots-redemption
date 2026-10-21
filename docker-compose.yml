@@ -38,7 +38,7 @@ services:
     working_dir: /ws
     volumes:
       - ./ws:/ws
-      - /dev:/dev          # the lidar and the ESP32 are both USB serial devices
+      - /dev:/dev          # the ESP32 is a USB serial device
     privileged: true
     # Needed to reach the micro-ROS agent, which runs in its own container with
     # --net=host. Bridge networking cannot see it. Linux only -- which is fine,

@@ -46,7 +46,7 @@ Read it before changing anything that touches the real robot. The short version:
 | Chassis | our own 3D print, 200 x 200 mm footprint, **mecanum** wheels |
 | Control board | Yahboom MicroROS board, ESP32-S3: motors, encoders, odometry, IMU, 2 servo ports |
 | IMU | ICM42670P 6-axis on the board, no magnetometer |
-| Lidar | Oradar MS200, USB to the Pi |
+| Lidar | Oradar MS200, plugged into the control board, which publishes `/scan` |
 | Battery | 7.4 V 2000 mAh Li-ion (2S 18650) |
 | Computer | Raspberry Pi 5, 8 GB |
 | Camera | **none**. Don't design features that need one |
@@ -99,10 +99,11 @@ library compiled into the firmware. There is no `ros2` CLI on it.
 your node ──/cmd_vel──► micro-ROS agent ──USB serial──► ESP32 ──PWM──► motors
                                                           │
 your node ◄──/odom──── odom_tf ◄──/odom_raw───────────────┘  (encoders)
-your node ◄──/scan──── lidar driver ◄──USB──────────────── lidar (straight to the Pi)
+your node ◄──/scan──── micro-ROS agent ◄──USB serial──── ESP32 ◄──UART──── lidar
 ```
 
-The lidar plugs into the **Pi**, not the MCU — so `/scan` never touches the ESP32.
+The lidar plugs into the **control board**, and the ESP32 publishes `/scan`
+itself. The single USB cable to the Pi carries everything.
 
 ## Build & run
 
@@ -125,7 +126,7 @@ launch file differs.
 
 ```bash
 ./scripts/start_agent.sh                       # terminal 1, leave running
-docker compose --profile robot up robot        # terminal 2: lidar + TFs + odom_tf
+docker compose --profile robot up robot        # terminal 2: TFs + odom_tf
 docker compose exec robot bash                 # terminal 3
 ros2 run robot_control sweep_planner
 ```
@@ -133,19 +134,21 @@ ros2 run robot_control sweep_planner
 Check both halves are alive before blaming your code:
 
 ```bash
-ros2 topic echo /scan --once     # lidar
-ros2 topic echo /odom --once     # ESP32 + micro-ROS agent
+ros2 topic echo /scan --once     # lidar, via the ESP32
+ros2 topic echo /odom --once     # ESP32 + micro-ROS agent + odom_tf
 ```
 
 ### The lidar: Oradar MS200
 
-Package `oradar_lidar`, executable `oradar_scan`, vendored as
-`docker/vendor/oradar_ros.tar.xz` because there is no upstream repo. We start
-`oradar_scan` directly from `robot.launch.py` with `frame_id:=laser_frame`, and
-do **not** use the driver's own launch file (Foxy syntax, breaks on Humble, and
-publishes a conflicting transform). It is a `ttyACM` device reached through the
-`/dev/oradar` udev symlink, so it never clashes with the ESP32's `ttyUSB0`.
-Details: [`docs/hardware/lidar.md`](docs/hardware/lidar.md).
+Plugs into the control board's radar port; the ESP32 publishes `/scan` (360
+points at 1°, angle_min -180°, so **index 0 is behind the robot**: always use
+`angle_min + i * angle_increment`). Nothing on the Pi reads the lidar.
+
+The repo also has a Pi-side MS200 driver (`oradar_lidar`, vendored in
+`docker/vendor/`), for the lidar plugged into the Pi over USB instead. It is
+**off by default** (`lidar:=false` in `robot.launch.py`); turning it on while
+the board also publishes `/scan` gives two publishers on one topic. Details:
+[`docs/hardware/lidar.md`](docs/hardware/lidar.md).
 
 ⚠️ **`ROS_DOMAIN_ID` must be 20 on the Pi** — that is what the ESP32 is
 configured with (`set_ros_domain_id(20)` in `config_robot.py`). The simulator

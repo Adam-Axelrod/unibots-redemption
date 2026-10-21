@@ -9,7 +9,7 @@ something new about a part, write it down in the matching page here.
 | [lidar.md](lidar.md) | The Oradar MS200 lidar and its driver |
 | [battery.md](battery.md) | The 7.4 V pack: specs, competition rules, charging and storage |
 | [chassis.md](chassis.md) | Our 3D-printed chassis, mecanum wheels, and the size and safety rules it must meet |
-| [pi-setup.md](pi-setup.md) | Connecting the Pi 5 to the board and lidar, step by step, and checking it works |
+| [pi-setup.md](pi-setup.md) | Connecting the Pi 5 to the board, step by step, and checking it works |
 
 ## The robot at a glance
 
@@ -33,17 +33,22 @@ our own chassis around them for [Unibots UK 2026-27](../unibots-rulebook-2026-27
 ## How the parts connect
 
 ```
-                         ┌──────────── Raspberry Pi 5 ─────────────┐
-                         │  micro-ROS agent    ROS 2 nodes          │
-                         └──────┬──────────────────────┬────────────┘
-             USB (serial 921600)│                      │USB
-                                │                      │
-  battery ──► ESP32-S3 control board                MS200 lidar
+                ┌──────── Raspberry Pi 5 ────────┐
+                │  micro-ROS agent   ROS 2 nodes  │
+                └───────┬────────────────────────┘
+     USB (serial 921600)│  the only data link
+                        │
+  battery ──► ESP32-S3 control board
   7.4 V        │ 5.1 V / 5 A USB-C ──► powers the Pi
+               │ radar port (UART)        ◄── MS200 lidar
                │ 4x motor + encoder ports ──► mecanum wheels
-               │ 2x PWM servo ports        ──► collection mechanism (TBD)
+               │ 2x PWM servo ports       ──► collection mechanism (TBD)
                └ ICM42670P IMU (on board)
 ```
+
+Everything connects to the board, and **one USB cable carries everything** to
+the Pi: the ESP32 reads the lidar and IMU and publishes `/scan` and the IMU
+topic itself, alongside `/odom_raw`.
 
 The **Pi is never in the motor control loop**. The ESP32 runs wheel PID,
 mecanum kinematics and odometry; the Pi only sends velocity commands and reads
