@@ -43,10 +43,6 @@ Update `/etc/hosts` first. If you rename first, every `sudo` until `/etc/hosts`
 is fixed warns `unable to resolve host rpi5`. That warning is harmless, but
 alarming.
 
-The second command prints `sudo: unable to resolve host rpi5`. That is
-expected and harmless: the Pi has its new name but `/etc/hosts` does not yet,
-so sudo complains once and then runs the command, which fixes the entry.
-
 ### 1.2 Turn on SSH
 
 ```bash
