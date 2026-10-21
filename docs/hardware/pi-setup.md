@@ -44,6 +44,15 @@ If it isn't there yet, clone it:
 git clone https://github.com/Adam-Axelrod/unibots-redemption.git ~/Projects/unibots-redemption
 ```
 
+Then go into it and make sure it's on an up-to-date `main`. **Run every
+command from here on inside this folder.**
+
+```bash
+cd ~/Projects/unibots-redemption
+git switch main
+git pull --ff-only
+```
+
 Code is never edited on the Pi, only pulled; see
 [Sharing the `pi` account](../remote-access.md#sharing-the-pi-account).
 
