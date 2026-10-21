@@ -34,9 +34,14 @@ The hostname becomes the Tailscale name, so set it **before** joining the
 tailnet:
 
 ```bash
+sudo sed -i '/^127\.0\.1\.1/d' /etc/hosts
+echo -e '127.0.1.1\trpi5' | sudo tee -a /etc/hosts > /dev/null
 sudo hostnamectl set-hostname rpi5
-sudo sed -i 's/^127\.0\.1\.1.*/127.0.1.1\trpi5/' /etc/hosts
 ```
+
+Update `/etc/hosts` first. If you rename first, every `sudo` until `/etc/hosts`
+is fixed warns `unable to resolve host rpi5`. That warning is harmless, but
+alarming.
 
 The second command prints `sudo: unable to resolve host rpi5`. That is
 expected and harmless: the Pi has its new name but `/etc/hosts` does not yet,
@@ -52,8 +57,13 @@ sudo systemctl enable --now ssh
 
 ```bash
 curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up
+sudo tailscale up --hostname=rpi5
 ```
+
+`--hostname=rpi5` pins the Tailscale name. Without it, Tailscale follows the
+Pi's hostname, so if that is ever changed back to `raspberrypi` (for example
+in Raspberry Pi Configuration), `ssh rpi5` stops resolving. To pin it on a Pi
+that is already on the tailnet, run `sudo tailscale set --hostname=rpi5`.
 
 `tailscale up` prints a login URL. Open it, either in the Pi's browser or on
 your phone, and sign in with **your** Tailscale account. Then confirm:
@@ -332,7 +342,7 @@ personal login.
 
 | Symptom | Check |
 |---|---|
-| `Could not resolve hostname rpi5` | Is Tailscale running on your laptop? Try the `100.x.y.z` address from `tailscale status` in place of the name. |
+| `Could not resolve hostname rpi5` | Is Tailscale running on your laptop? Does `tailscale status` list the Pi as `rpi5`? If it shows `raspberrypi`, the hostname changed: `ssh pi@100.x.y.z` and redo [1.1](#11-name-it-rpi5) and `sudo tailscale set --hostname=rpi5`. |
 | `Connection closed by 100.x.y.z port 22`, no password prompt | Your agent offered too many keys. Add `IdentitiesOnly yes` to the `rpi5` block, wait a minute, and try again. |
 | `rpi5` shows as offline in `tailscale status` | The Pi has no internet. Check eduroam with a keyboard: `nmcli connection show --active`, and the [reconnect check](#3-make-it-work-with-nobody-there). |
 | Collaborator can't see `rpi5` | They accepted the invite with a different email from the one their Tailscale account uses. Re-share to the right address. |
