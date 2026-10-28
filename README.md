@@ -35,7 +35,9 @@ docker compose exec sim bash          # ROS is already sourced in here
 ros2 run robot_control square_driver
 ```
 
-Watch the browser: the robot drives a 1 m square and leaves a trail.
+Watch the browser: the robot maps the room with its lidar and sweeps all of it
+in lanes lined up with the walls, going round anything in its way, and leaves a
+trail.
 
 Try the others:
 
