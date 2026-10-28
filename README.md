@@ -95,6 +95,13 @@ your code moves between them without changes:
 
 The car has mecanum wheels, so `linear.y` really does strafe sideways.
 
+**Testing on a prototype with ordinary wheels?** Run the driver with
+`--ros-args -p drive:=diff`: it never sends `linear.y`, and turns to face where
+it is going instead. Nothing else changes -- the ESP32 still takes `/cmd_vel`,
+and with `linear.y` at 0 its mecanum maths is plain left/right tank steering.
+Launch the simulator with `drive:=diff` too, and it ignores `linear.y` the same
+way.
+
 ## If something breaks
 
 **Port 8080 already in use** — something else has the port. Change both numbers

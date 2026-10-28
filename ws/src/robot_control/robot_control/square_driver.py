@@ -18,9 +18,20 @@ and the plan is simple:
 
 At the start the robot works out which way the walls run (coverage_map.wall_angle)
 and lines the lanes up with them, so it does not matter which way it is facing.
-It never needs to turn to change direction -- mecanum wheels drive any way --
-but it does turn to face along each lane, so whatever is mounted on the front
-leads the way.
+
+How it drives depends on the `drive` parameter:
+
+    mecanum  (default) drives straight at its target in any direction, using
+             linear.y, and turns to face along each lane as it goes
+    diff     for wheels that cannot strafe: never sends linear.y. It follows
+             the path by pure pursuit -- curving towards a point `lookahead`
+             ahead -- and only turns on the spot when well off course. Turns
+             cost time, so choosing the next cell counts the turn to face it,
+             and it sweeps into a new lane in one arc instead of stopping.
+             The ESP32's mecanum maths with linear.y = 0 is plain left/right
+             tank steering, so this needs no firmware change.
+
+    ros2 run robot_control square_driver --ros-args -p drive:=diff
 
 Every command also goes through _guard, which refuses to drive into anything
 closer than `stop_gap` in the raw scan, map or no map: that catches things the
@@ -55,8 +66,10 @@ class SquareDriver(Node):
     def __init__(self):
         super().__init__('square_driver')
 
+        self.declare_parameter('drive', 'mecanum')     # or 'diff', if it cannot strafe
         self.declare_parameter('speed', 0.25)          # m/s
         self.declare_parameter('turn_speed', 0.8)      # rad/s
+        self.declare_parameter('lookahead', 0.4)       # m; diff drive steers for a point this far on
         self.declare_parameter('lane_width', 0.4)      # m between lanes
         self.declare_parameter('sweep_side', 'left')   # which way to work across the room first
         self.declare_parameter('half_width', 0.10)     # half the 200 mm chassis
@@ -70,6 +83,7 @@ class SquareDriver(Node):
 
         self.speed = self.get_parameter('speed').value
         self.turn_speed = self.get_parameter('turn_speed').value
+        self.lookahead = self.get_parameter('lookahead').value
         self.lane_width = self.get_parameter('lane_width').value
         self.half_width = self.get_parameter('half_width').value
         self.clearance = self.get_parameter('clearance').value
@@ -79,6 +93,10 @@ class SquareDriver(Node):
         self.stuck_time = self.get_parameter('stuck_time').value
         self.scan_timeout = self.get_parameter('scan_timeout').value
         self.side = -1 if self.get_parameter('sweep_side').value == 'right' else 1
+        drive = self.get_parameter('drive').value
+        if drive not in ('mecanum', 'diff'):
+            raise ValueError(f"drive must be 'mecanum' or 'diff', not '{drive}'")
+        self.strafe = drive == 'mecanum'
 
         self.map = GridMap(self.get_parameter('map_resolution').value,
                            self.half_width + self.clearance)
@@ -95,8 +113,10 @@ class SquareDriver(Node):
         self.frame = None                # coverage grid: (origin x, origin y, wall angle)
         self.covered = set()             # coverage cells driven over
         self.skipped = set()             # coverage cells we could not reach
+        self.reachable = {}              # coverage cell -> (x, y) we can reach nearest its centre
         self.lane = 0                    # index into DIRS
         self.target = None               # coverage cell we are heading for
+        self.lane_start = False          # ...to start a lane there, not end one
         self.goal = None                 # (x, y) in it we are driving to
         self.path = []                   # occupancy cells from here to goal
         self.last_plan = None
@@ -105,7 +125,8 @@ class SquareDriver(Node):
         self.started = None
 
         self.create_timer(0.05, self.tick)   # 20 Hz control loop
-        self.get_logger().info(f'covering the room -- lanes {self.lane_width} m apart')
+        self.get_logger().info(f'covering the room -- lanes {self.lane_width} m apart, '
+                               f'{drive} drive')
 
     # ------------------------------------------------------------------ input
 
@@ -149,13 +170,26 @@ class SquareDriver(Node):
             self._line_up_with_walls(x, y, yaw)
             self.started = self.get_clock().now()
 
+        # A cell is covered once we pass within half a lane of its reachable
+        # point (its centre, unless that is too near a wall): that is what we
+        # sweep. Not just "we are in it": along a wall, the reachable points
+        # sit right on a cell's edge, and wobble would keep missing them.
         here = self._cov_cell(x, y)
         self.covered.add(here)
+        for di in (-1, 0, 1):
+            for dj in (-1, 0, 1):
+                c = (here[0] + di, here[1] + dj)
+                cx, cy = self.reachable.get(c) or self._cov_centre(c)
+                if math.hypot(cx - x, cy - y) <= self.lane_width / 2:
+                    self.covered.add(c)
 
         # 8 cm, not 0: a goal against a wall is a hair inside _guard's stop
-        # distance, and we would never quite get there.
+        # distance, and we would never quite get there. Without strafing,
+        # the start of a lane only needs passing near, not stopping on: we
+        # sweep into the lane in one arc instead of stopping to turn.
+        reach = 0.15 if self.lane_start and not self.strafe else 0.08
         arrived = self.goal is not None and \
-            math.hypot(self.goal[0] - x, self.goal[1] - y) < 0.08
+            math.hypot(self.goal[0] - x, self.goal[1] - y) < reach
         if self.target is None or arrived:
             self._plan(new_target=True)
         elif self._age(self.last_plan) > self.replan_period:
@@ -168,10 +202,22 @@ class SquareDriver(Node):
         cmd = Twist()
         near = min(self.points, key=lambda p: math.hypot(*p), default=None)
         if near is not None and math.hypot(*near) < self.half_width + self.clearance:
-            # Too close to something to plan from: back straight away from it first.
+            # Too close to something to plan from: back straight away from it
+            # first -- or, without strafing, away along our own length.
             d = math.hypot(*near)
-            cmd.linear.x = -0.1 * near[0] / d
-            cmd.linear.y = -0.1 * near[1] / d
+            if self.strafe:
+                cmd.linear.x = -0.1 * near[0] / d
+                cmd.linear.y = -0.1 * near[1] / d
+            else:
+                # Reverse if it is ahead, drive on if it is behind; if it is
+                # beside us, turn to put it behind first.
+                away = math.atan2(-near[1], -near[0])
+                if abs(away) < 0.5:
+                    cmd.linear.x = 0.1
+                elif abs(away) > math.pi - 0.5:
+                    cmd.linear.x = -0.1
+                else:
+                    cmd.angular.z = self.turn_speed * (1.0 if away > 0 else -1.0)
         elif self.goal is not None:
             self._drive(cmd, x, y, yaw)
         self._guard(cmd)
@@ -196,11 +242,37 @@ class SquareDriver(Node):
                     ax, ay = cx, cy
                     break
 
-        # World-frame velocity towards it, slowing for the final few cm...
         a = math.hypot(ax - x, ay - y)
-        v = self.speed * max(0.2, min(1.0, d / 0.15)) if a > 0.01 else 0.0
-        wx, wy = (v * (ax - x) / a, v * (ay - y) / a) if a > 0.01 else (0.0, 0.0)
-        # ...then into the robot's frame: mecanum can drive any direction.
+        if a < 0.01:
+            return
+        v = self.speed
+        if not (self.lane_start and not self.strafe):
+            v *= max(0.2, min(1.0, d / 0.15))     # slow for the final few cm
+
+        if not self.strafe:
+            # Differential: pure pursuit. Drive the circular arc that passes
+            # through the aim point, starting along our current heading:
+            # curvature 2 sin(error) / distance. The arc bows out from the
+            # straight line the map checked, so keep the aim point close
+            # (0.4 m) and the error small (under ~46 deg): then it bows out
+            # under 9 cm. Further off course, turn on the spot first.
+            if a > self.lookahead:
+                ax, ay = x + (ax - x) * self.lookahead / a, y + (ay - y) * self.lookahead / a
+                a = self.lookahead
+            error = angle_diff(math.atan2(ay - y, ax - x), yaw)
+            if abs(error) > 0.8:
+                cmd.angular.z = self.turn_speed * (1.0 if error > 0 else -1.0)
+                return
+            curvature = 2.0 * math.sin(error) / a
+            if abs(curvature) * v > self.turn_speed:
+                v = self.turn_speed / abs(curvature)  # a tight arc: slow down for it
+            cmd.linear.x = v
+            cmd.angular.z = v * curvature
+            return
+
+        # Mecanum: world-frame velocity towards it, then into the robot's
+        # frame -- it can drive any direction -- while turning along the lane.
+        wx, wy = v * (ax - x) / a, v * (ay - y) / a
         cmd.linear.x = math.cos(yaw) * wx + math.sin(yaw) * wy
         cmd.linear.y = -math.sin(yaw) * wx + math.cos(yaw) * wy
         heading = self.frame[2] + self.lane * math.pi / 2.0
@@ -272,6 +344,7 @@ class SquareDriver(Node):
             off = math.hypot(fx - cx, fy - cy)
             if c not in spots or off < spots[c][1]:
                 spots[c] = (f, off)
+        self.reachable = {c: self.map.centre(f) for c, (f, _) in spots.items()}
         todo = {c: s for c, s in spots.items()
                 if c not in self.covered and c not in self.skipped}
 
@@ -314,15 +387,25 @@ class SquareDriver(Node):
         n = run(here, self.lane)
         if n > 0:
             di, dj = DIRS[self.lane]
+            self.lane_start = False
             return (here[0] + n * di, here[1] + n * dj)
 
         # 2. Otherwise the nearest unvisited cell, preferring the side of the
         #    room we are working across (so we do not leave strips behind).
+        #    Without strafing, turning costs time too: count the turn to face
+        #    a cell as the distance we could have driven in that time.
+        self.lane_start = True
+        x, y, yaw = self.pose
         across = 1 - abs(DIRS[self.lane][0])      # 0: lanes run along i, so "across" is j
         def cost(c):
             steps = dist[spots[c][0]] * self.map.res
             side = (c[across] - here[across]) * self.side
-            return steps + (self.lane_width if side < 0 else 0.0)
+            turn = 0.0
+            if not self.strafe:
+                cx, cy = self.map.centre(spots[c][0])
+                turn = abs(angle_diff(math.atan2(cy - y, cx - x), yaw))
+            return steps + (self.lane_width if side < 0 else 0.0) + \
+                turn * self.speed / self.turn_speed
         target = min(spots, key=cost)
         side = (target[across] - here[across]) * self.side
         if side < 0:
