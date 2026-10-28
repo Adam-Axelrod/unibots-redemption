@@ -46,6 +46,7 @@ import math
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import ExternalShutdownException
+from rclpy.qos import qos_profile_sensor_data
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
@@ -103,7 +104,11 @@ class SquareDriver(Node):
 
         self.pub = self.create_publisher(Twist, 'cmd_vel', 10)
         self.create_subscription(Odometry, 'odom', self.on_odom, 10)
-        self.create_subscription(LaserScan, 'scan', self.on_scan, 10)
+        # Sensor-data QoS (best effort): it hears a best-effort publisher --
+        # micro-ROS boards often publish sensors that way -- as well as a
+        # reliable one like the simulator. The default (reliable) would
+        # silently hear nothing from a best-effort /scan.
+        self.create_subscription(LaserScan, 'scan', self.on_scan, qos_profile_sensor_data)
 
         self.pose = None                 # (x, y, yaw), filled in by on_odom
         self.points = []                 # lidar returns as (x, y), robot frame
