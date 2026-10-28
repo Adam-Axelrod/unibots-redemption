@@ -1,0 +1,17 @@
+# ws/src/localisation/config/arena.yaml
+
+# The map is centred on the arena, with +x pointing inwards from our starting wall and +y pointing left.
+frame:
+  frame_id: map
+
+walls:
+  inner_side_length_m: 2.500
+  inner_side_length_tolerance_m: 0.050
+  height_m: 0.157
+  height_tolerance_m: 0.010
+
+# The scoring guides define the valid starting and parking span along our home wall.
+scoring_guides:
+  width_m: 0.020
+  inner_edge_separation_m: 0.760
+  position_tolerance_m: 0.002

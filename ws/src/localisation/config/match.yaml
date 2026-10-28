@@ -1,0 +1,11 @@
+# ws/src/localisation/config/match.yaml
+
+# Set to the assigned colour before each match.
+team: yellow
+
+duration_s: 180.0
+
+# The robot starts centred against the home wall, facing into the arena.
+start:
+  lateral_offset_m: 0.0
+  yaw_deg: 0.0

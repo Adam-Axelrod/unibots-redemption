@@ -1,0 +1,27 @@
+# ws/src/localisation/config/localisation.yaml
+
+# Lidar localisation against known walls, without wheel odometry.
+scan_matching:
+  max_point_to_wall_m: 0.25
+  huber_delta_m: 0.05
+  max_iterations: 20
+  convergence_step_m: 0.001
+  convergence_step_deg: 0.05
+  min_inliers_per_wall: 10
+  max_inlier_rms_m: 0.10
+
+# The previous pose provides the initial estimate for each scan.
+tracking:
+  max_speed_m_per_s: 0.5
+  max_turn_rate_deg_per_s: 90.0
+  jump_gate_sigma: 3.0
+  lost_after_s: 1.0
+
+# Initial uncertainty relative to the home wall.
+initial_pose_sigma:
+  lateral_m: 0.05
+  inward_m: 0.02
+  yaw_deg: 5.0
+
+imu_fusion:
+  gyroscope: false
