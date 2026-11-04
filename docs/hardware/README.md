@@ -51,7 +51,8 @@ the Pi: the ESP32 reads the lidar and IMU and publishes `/scan` and the IMU
 topic itself, alongside `/odom_raw`.
 
 The **Pi is never in the motor control loop**. The ESP32 runs wheel PID,
-mecanum kinematics and odometry; the Pi only sends velocity commands and reads
+skid-steer kinematics (it cannot strafe yet, see
+[esp32-board.md](esp32-board.md#firmware)) and odometry; the Pi only sends velocity commands and reads
 back odometry, IMU and lidar.
 
 ## Still unknown
@@ -60,9 +61,7 @@ Fill these in as you find out, then move the answer into the right page.
 
 - Exact motor model: Yahboom's board docs say **310** motors, the car's README
   says **370**. Check the label on the motor.
-- Which ROS topics the shipped ESP32 firmware publishes (IMU? battery
-  voltage?). See [pi-setup.md](pi-setup.md#7-record-what-the-board-publishes).
-- Units of the IMU topic (see [esp32-board.md](esp32-board.md#imu)).
+- What the `/servo_s1` and `/servo_s2` values mean (degrees, probably).
 - Where the sensors sit on our chassis. The offsets in
   `ws/src/robot_bringup/launch/robot.launch.py` were measured on Yahboom's car
   and must be re-measured.

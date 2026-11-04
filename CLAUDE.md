@@ -33,6 +33,10 @@ motor. That is the whole design:
 /odom     (Odometry)   robot -> you      pose + velocity, frame odom -> base_footprint
 ```
 
+⚠️ **`linear.y` only works in the simulator for now.** Yahboom's firmware ignores
+it, so code that strafes passes in the simulator and sits still on the real robot.
+Our own firmware, to fix this, is in progress on `feat/custom-firmware`.
+
 When adding a feature, add it against these topics. If you find yourself
 branching on "am I in simulation", something has gone wrong.
 
@@ -60,7 +64,7 @@ The board is Yahboom's **MicroROS Control Board**, built on an
 **ESP32-S3-WROOM-1U-N4R2**. Not the STM32F103 board Yahboom also sells for the
 Pi 5 — different firmware, different IMU, near-identical marketing copy.
 
-It does all the real-time work: mecanum inverse kinematics, per-wheel PID using
+It does all the real-time work: skid-steer kinematics, per-wheel PID using
 the encoders (decoded in hardware by the ESP32's PCNT units), and integrating
 wheel odometry. **The Raspberry Pi is never in the motor control loop.**
 
@@ -77,8 +81,11 @@ domain ID, WiFi.
 The micro-ROS agent uses **921600**. Same cable, two protocols, mutually
 exclusive — stop the agent before configuring, and reboot the board afterwards.
 
-⚠️ The IMU's units in the shipped firmware are unconfirmed. Yahboom's sample
-code publishes deg/s and g, not ROS's rad/s and m/s². Check before fusing it.
+The board publishes `/scan`, `/imu` (SI units, but `orientation` is never
+filled in), `/odom_raw` and `/battery` (volts x 10), and listens on
+`/cmd_vel`, `/beep`, `/servo_s1` and `/servo_s2`. There is no button topic, so
+the start button must go on the Pi's GPIO. Full table:
+[`docs/hardware/esp32-board.md`](docs/hardware/esp32-board.md#topics).
 
 ### 2. micro-ROS agent (on the Pi)
 
@@ -130,6 +137,10 @@ docker compose --profile robot up robot        # terminal 2: TFs + odom_tf
 docker compose exec robot bash                 # terminal 3
 ros2 run robot_control sweep_planner
 ```
+
+The board's power switch also powers the Pi: `sudo shutdown now` before
+switching off. To stop the motors without cutting power, see
+[`docs/hardware/pi-setup.md`](docs/hardware/pi-setup.md#stopping-the-motors).
 
 Check both halves are alive before blaming your code:
 
