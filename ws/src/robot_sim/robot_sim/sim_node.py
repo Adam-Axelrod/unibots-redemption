@@ -49,6 +49,7 @@ class SimNode(Node):
         self.declare_parameter('robot_radius', 0.12)   # metres, for collisions
         self.declare_parameter('cmd_timeout', 0.5)     # stop if commands stop
         self.declare_parameter('viz_port', 8080)
+        self.declare_parameter('drive', 'mecanum')     # 'diff': wheels that cannot strafe
 
         world_name = self.get_parameter('world').value
         self.rate = self.get_parameter('rate').value
@@ -56,6 +57,7 @@ class SimNode(Node):
         self.range_max = self.get_parameter('scan_range_max').value
         self.radius = self.get_parameter('robot_radius').value
         self.cmd_timeout = self.get_parameter('cmd_timeout').value
+        self.strafe = self.get_parameter('drive').value != 'diff'
 
         self.world = world_lib.load(world_name)
         self.segments = self.world['segments']
@@ -81,14 +83,16 @@ class SimNode(Node):
         self.create_timer(self.dt, self.step)
 
         self.get_logger().info(
-            f"simulating '{world_name}' at {self.rate:.0f} Hz -- "
+            f"simulating '{world_name}' at {self.rate:.0f} Hz, "
+            f"{'mecanum' if self.strafe else 'diff'} drive -- "
             f'watch it at http://localhost:{self.get_parameter("viz_port").value}')
 
     # ------------------------------------------------------------------ input
 
     def on_cmd_vel(self, msg: Twist):
         self.vx = msg.linear.x
-        self.vy = msg.linear.y      # mecanum wheels can strafe sideways
+        # Mecanum wheels can strafe sideways; ordinary wheels just ignore it.
+        self.vy = msg.linear.y if self.strafe else 0.0
         self.wz = msg.angular.z
         self.last_cmd_time = self.get_clock().now()
 

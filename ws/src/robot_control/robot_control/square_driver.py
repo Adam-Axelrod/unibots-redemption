@@ -1,25 +1,87 @@
 #!/usr/bin/env python3
-"""square_driver -- drive a 1 m square. The simplest closed-loop example.
+"""square_driver -- cover the whole room, lane by lane, using a lidar map.
 
-This is the file to copy when you want to try your own driving pattern. It
-shows the whole shape of a control node in about 80 lines:
+Two maps are built as the robot drives:
 
-    1. subscribe to /odom so you know where you are
-    2. run a state machine on a timer
-    3. publish /cmd_vel to move
+    an occupancy grid   (coverage_map.GridMap, 5 cm cells, odom frame)
+        from /scan: where the walls and obstacles are, and where is open floor
+    a coverage grid     (lane_width cells, lined up with the walls)
+        which parts of the floor the robot has already driven over
+
+and the plan is simple:
+
+    carry on down the current lane while the next cell is open and unvisited
+    otherwise go to the nearest unvisited cell -- round obstacles, by the
+    shortest path on the map -- and start a new lane there, pointing the way
+    with the longest unvisited run
+    when nothing reachable is left, start again
+
+At the start the robot works out which way the walls run (coverage_map.wall_angle)
+and lines the lanes up with them, so it does not matter which way it is facing.
+
+How it drives depends on the `drive` parameter:
+
+    mecanum  (default) slides straight at its target without turning wherever
+             it can. `lane_style` says which way it faces on the lanes:
+               sideways  faces across them and strafes down them, left then
+                         right, stepping forward between: nearly no turning
+               forward   faces along them, like a lawnmower. Between lanes it
+                         slides across, turning round as it goes, the way that
+                         keeps its direction of travel where the lidar can see
+    diff     for wheels that cannot strafe: never sends linear.y. It follows
+             the path by pure pursuit -- curving towards a point `lookahead`
+             ahead -- and only turns on the spot when well off course. Turns
+             cost time, so choosing the next cell counts the turn to face it,
+             and it sweeps into a new lane in one arc instead of stopping.
+             The ESP32's mecanum maths with linear.y = 0 is plain left/right
+             tank steering, so this needs no firmware change.
+
+    ros2 run robot_control square_driver --ros-args -p drive:=diff
+
+Two things to try, for comparison:
+
+    motion:=random   wander instead of planning: pick a random clear direction,
+                     drive for a few seconds or until something is close, repeat
+    use_slam:=true   take our position from slam_toolbox instead of trusting
+                     wheel odometry. Start it first:
+                     ros2 launch robot_bringup slam.launch.py
+
+Every command also goes through _guard, which refuses to drive into anything
+closer than `stop_gap` in the raw scan, map or no map: that catches things the
+map has not caught up with, like another robot. Where the lidar cannot see
+(`lidar_view`: the chassis blocks its rear) it checks the map instead. With
+stopping when the lidar goes quiet, that is the collision avoidance the rules
+ask for (R10).
 
 Run it:   ros2 run robot_control square_driver
-Watch it: http://localhost:8080
+Watch it: http://localhost:8080   the simulator: where the robot really is
+          http://localhost:8081   driver_view: what the robot believes, its map
+                                  and its plan. On the real robot too, at the
+                                  Pi's name instead of localhost.
 """
 import math
+import random
 
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import ExternalShutdownException
+from rclpy.duration import Duration
+from rclpy.qos import qos_profile_sensor_data
+from rclpy.time import Time
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import LaserScan
 
 from robot_control.util import yaw_from_quaternion, angle_diff
+from robot_control.coverage_map import GridMap, wall_angle
+from robot_control.driver_view import DriverView
+
+# Lane directions in coverage-grid steps: along the walls, then round by 90 deg.
+DIRS = [(1, 0), (0, 1), (-1, 0), (0, -1)]
+
+
+def clamp(value, limit):
+    return max(-limit, min(limit, value))
 
 
 class SquareDriver(Node):
@@ -27,59 +89,728 @@ class SquareDriver(Node):
     def __init__(self):
         super().__init__('square_driver')
 
-        self.declare_parameter('side', 1.0)          # metres
-        self.declare_parameter('speed', 0.25)        # m/s
-        self.declare_parameter('turn_speed', 0.8)    # rad/s
+        self.declare_parameter('drive', 'mecanum')     # or 'diff', if it cannot strafe
+        self.declare_parameter('lane_style', 'sideways')  # mecanum: or 'forward'
+        self.declare_parameter('motion', 'coverage')   # or 'random', to wander
+        self.declare_parameter('random_seed', 0)       # 0: different every run
+        self.declare_parameter('use_slam', False)      # position from slam_toolbox
+        self.declare_parameter('speed', 0.25)          # m/s
+        self.declare_parameter('turn_speed', 0.8)      # rad/s
+        self.declare_parameter('lookahead', 0.4)       # m; diff drive aims this far ahead
+        self.declare_parameter('lane_width', 0.4)      # m between lanes
+        self.declare_parameter('sweep_side', 'left')   # which way to work across the room first
+        self.declare_parameter('half_width', 0.10)     # half the 200 mm chassis
+        self.declare_parameter('clearance', 0.08)      # m spare round the chassis
+        self.declare_parameter('stop_gap', 0.06)       # never drive closer than this
+        self.declare_parameter('lidar_view', 100.0)    # deg either side of ahead it can see
+        self.declare_parameter('map_resolution', 0.05) # m per occupancy cell
+        self.declare_parameter('map_range', 4.0)       # m of each beam added to the map
+        self.declare_parameter('replan_period', 1.0)   # s between re-plans
+        self.declare_parameter('stuck_time', 4.0)      # s stuck before skipping a cell
+        self.declare_parameter('scan_timeout', 0.5)    # s; stop if the lidar goes quiet
+        self.declare_parameter('view_port', 8081)      # driver_view web page; 0 turns it off
 
-        self.side = self.get_parameter('side').value
         self.speed = self.get_parameter('speed').value
         self.turn_speed = self.get_parameter('turn_speed').value
+        self.lookahead = self.get_parameter('lookahead').value
+        self.lane_width = self.get_parameter('lane_width').value
+        self.half_width = self.get_parameter('half_width').value
+        self.clearance = self.get_parameter('clearance').value
+        self.stop_gap = self.get_parameter('stop_gap').value
+        self.view = math.radians(self.get_parameter('lidar_view').value)
+        self.map_range = self.get_parameter('map_range').value
+        self.replan_period = self.get_parameter('replan_period').value
+        self.stuck_time = self.get_parameter('stuck_time').value
+        self.scan_timeout = self.get_parameter('scan_timeout').value
+        self.side = -1 if self.get_parameter('sweep_side').value == 'right' else 1
+        drive = self.get_parameter('drive').value
+        if drive not in ('mecanum', 'diff'):
+            raise ValueError(f"drive must be 'mecanum' or 'diff', not '{drive}'")
+        self.strafe = drive == 'mecanum'
+        lane_style = self.get_parameter('lane_style').value
+        if lane_style not in ('sideways', 'forward'):
+            raise ValueError(f"lane_style must be 'sideways' or 'forward', not '{lane_style}'")
+        self.sideways = self.strafe and lane_style == 'sideways'
+        motion = self.get_parameter('motion').value
+        if motion not in ('coverage', 'random'):
+            raise ValueError(f"motion must be 'coverage' or 'random', not '{motion}'")
+        self.wandering = motion == 'random'
+        self.rng = random.Random(self.get_parameter('random_seed').value or None)
+
+        self.map = GridMap(self.get_parameter('map_resolution').value,
+                           self.half_width + self.clearance)
 
         self.pub = self.create_publisher(Twist, 'cmd_vel', 10)
         self.create_subscription(Odometry, 'odom', self.on_odom, 10)
+        # Sensor-data QoS (best effort): it hears a best-effort publisher --
+        # micro-ROS boards often publish sensors that way -- as well as a
+        # reliable one like the simulator. The default (reliable) would
+        # silently hear nothing from a best-effort /scan.
+        self.create_subscription(LaserScan, 'scan', self.on_scan, qos_profile_sensor_data)
 
         self.pose = None                 # (x, y, yaw), filled in by on_odom
-        self.state = 'driving'           # 'driving' or 'turning'
-        self.anchor = None               # where the current leg started
-        self.legs_done = 0
+        self.odom_pose = None            # the same, by wheel odometry alone
+        self.correction = None           # slam_toolbox's map -> odom: (x, y, yaw)
+        self.redrawn = None              # when a SLAM jump last made us redraw the map
+        self.odom_trail = []             # where wheel odometry alone says we went
+        self.points = []                 # lidar returns as (x, y), robot frame
+        self.last_scan = None            # when they arrived
+        self.last_map_update = None
+
+        self.frame = None                # coverage grid: (origin x, origin y, wall angle)
+        self.covered = set()             # coverage cells driven over
+        self.skipped = set()             # coverage cells we could not reach
+        self.reachable = {}              # coverage cell -> (x, y) we can reach nearest its centre
+        self.lane = 0                    # index into DIRS
+        if self.sideways:
+            # Start with a lane across our heading, and work forwards: no
+            # turn at all to begin with.
+            self.lane = 1 if self.side > 0 else 3
+            self.side = 1
+        self.target = None               # coverage cell we are heading for
+        self.lane_start = False          # ...to start a lane there, not end one
+        self.facing_travel = False       # turning to face the way we need to go
+        self.goal = None                 # (x, y) in it we are driving to
+        self.path = []                   # occupancy cells from here to goal
+        self.last_plan = None
+        self.best_dist = math.inf        # closest we have been to goal...
+        self.best_time = None            # ...and when
+        self.started = None
+        self.aim = None                  # the point being steered for right now
+        self.doing = 'waiting for /odom and /scan'   # in words, for driver_view
+        self.alert = False               # ...and whether that is a problem
+        self.last_cmd = Twist()
+        self.trail = []                  # where we believe we have been
+        self.leg_direction = None        # random walk: world heading of this leg
+        self.leg_until = None            # ...and when it ends
+        self.leg_turn = 0.0              # ...turning on the spot first, this way
 
         self.create_timer(0.05, self.tick)   # 20 Hz control loop
-        self.get_logger().info(f'driving a {self.side} m square')
+
+        self.use_slam = self.get_parameter('use_slam').value
+        if self.use_slam:
+            self._start_slam()
+
+        self.viewer = None
+        port = self.get_parameter('view_port').value
+        if port:
+            # A busy port must not stop the robot: it can drive without a view.
+            try:
+                self.viewer = DriverView(port)
+                self.viewer.start()
+                self.create_timer(0.2, self._update_view)
+                self.create_timer(1.0, self._update_view_map)
+                self.get_logger().info(f'live view on port {port}')
+            except OSError as err:
+                self.viewer = None
+                self.get_logger().warn(f'no live view: cannot use port {port} ({err})')
+        what = 'wandering at random' if self.wandering else \
+            f'covering the room -- lanes {self.lane_width} m apart'
+        self.get_logger().info(f'{what}, {drive} drive, position from '
+                               + ('slam_toolbox' if self.use_slam else 'wheel odometry'))
+
+    # ------------------------------------------------------------------ input
 
     def on_odom(self, msg: Odometry):
         p = msg.pose.pose
-        self.pose = (p.position.x, p.position.y, yaw_from_quaternion(p.orientation))
+        self.odom_pose = (p.position.x, p.position.y, yaw_from_quaternion(p.orientation))
+        if not self.use_slam:
+            self.pose = self.odom_pose
+            return
+        # slam_toolbox says how far odometry has drifted: map -> odom. Apply the
+        # latest to the latest odometry. If SLAM stops, this keeps the last
+        # correction and we carry on, on odometry, rather than freeze.
+        self._update_correction()
+        if self.correction is not None:
+            cx, cy, cyaw = self.correction
+            ox, oy, oyaw = self.odom_pose
+            self.pose = (cx + math.cos(cyaw) * ox - math.sin(cyaw) * oy,
+                         cy + math.sin(cyaw) * ox + math.cos(cyaw) * oy,
+                         angle_diff(cyaw + oyaw, 0.0))
+
+    def on_scan(self, msg: LaserScan):
+        """Keep the scan as (x, y) points around the robot (x ahead, y left),
+        and add it to the map a few times a second."""
+        points, beams = [], []
+        for i, r in enumerate(msg.ranges):
+            angle = msg.angle_min + i * msg.angle_increment    # 0 == straight ahead
+            if abs(angle_diff(angle, 0.0)) > self.view:
+                continue                  # the chassis, not the world: it would
+                                          # look like something touching the robot
+            if math.isfinite(r) and msg.range_min <= r < msg.range_max:
+                points.append((r * math.cos(angle), r * math.sin(angle)))
+                beams.append((angle, r, True))
+            elif not math.isfinite(r) or r >= msg.range_max:
+                beams.append((angle, msg.range_max, False))   # nothing out to max range
+        self.points = points
+        now = self.get_clock().now()
+        self.last_scan = now
+
+        if self.pose is not None and (self.last_map_update is None or
+                                      self._age(self.last_map_update) > 0.2):
+            self.map.update(*self.pose, beams, self.map_range)
+            self.last_map_update = now
+
+    # ----------------------------------------------------------- control loop
 
     def tick(self):
         if self.pose is None:
-            return                        # no odometry yet, stay put
+            # No position yet, stay put. Say so: nothing moves until it arrives.
+            if self.odom_pose is None:
+                self.get_logger().warn('no /odom -- waiting. On the robot it comes from the '
+                                       'micro-ROS agent and odom_tf: are both running?',
+                                       throttle_duration_sec=2.0)
+                self.doing, self.alert = 'waiting: no odometry on /odom', True
+            else:
+                self.get_logger().warn('no map -> odom from slam_toolbox -- waiting. Is '
+                                       'slam.launch.py running?', throttle_duration_sec=2.0)
+                self.doing, self.alert = 'waiting: no position from SLAM yet', True
+            return
+        if self.last_scan is None or self._age(self.last_scan) > self.scan_timeout:
+            self.get_logger().warn('no /scan -- stopped until the lidar is back',
+                                   throttle_duration_sec=2.0)
+            self.doing, self.alert = 'stopped: no lidar data', True
+            self.last_cmd = Twist()
+            self.pub.publish(self.last_cmd)   # driving blind is not allowed
+            return
 
         x, y, yaw = self.pose
-        if self.anchor is None:
-            self.anchor = self.pose
+        if self.frame is None:
+            self._line_up_with_walls(x, y, yaw)
+            self.started = self.get_clock().now()
+        if not self.trail or math.hypot(x - self.trail[-1][0], y - self.trail[-1][1]) > 0.03:
+            self.trail.append((round(x, 2), round(y, 2)))
+            del self.trail[:-600]
+            if self.use_slam:
+                self.odom_trail.append((round(self.odom_pose[0], 2), round(self.odom_pose[1], 2)))
+                del self.odom_trail[:-600]
+
+        # A cell is covered once we pass within half a lane of its centre: that
+        # is what we sweep. A cell against a wall has its centre out of reach,
+        # so there we must pass close to its reachable point instead, or the
+        # lane next door would count and the strip along the wall never swept.
+        here = self._cov_cell(x, y)
+        for di in (-1, 0, 1):
+            for dj in (-1, 0, 1):
+                c = (here[0] + di, here[1] + dj)
+                cx, cy = self._cov_centre(c)
+                rx, ry = self.reachable.get(c, (cx, cy))
+                if math.hypot(rx - cx, ry - cy) < 0.05:
+                    radius = self.lane_width / 2
+                else:
+                    radius = 0.1
+                if math.hypot(rx - x, ry - y) <= radius:
+                    self.covered.add(c)
+        if here not in self.reachable:
+            self.covered.add(here)
+
+        # 8 cm, not 0: a goal against a wall is a hair inside _guard's stop
+        # distance, and we would never quite get there. Without strafing,
+        # the start of a lane only needs passing near, not stopping on: we
+        # sweep into the lane in one arc instead of stopping to turn.
+        reach = 0.15 if self.lane_start and not self.strafe else 0.08
+        arrived = self.goal is not None and \
+            math.hypot(self.goal[0] - x, self.goal[1] - y) < reach
+        if self.wandering:
+            if self._age(self.last_plan) > self.replan_period:
+                self._find_spots(self.map.bfs(self.map.cell(x, y))[0])  # for the view's count
+                self.last_plan = self.get_clock().now()
+        elif self.target is None or arrived:
+            self._plan(new_target=True)
+        elif self._age(self.last_plan) > self.replan_period:
+            self._plan(new_target=False)  # same cell, fresh path: the map may have changed
+        elif self._age(self.best_time) > self.stuck_time:
+            self.get_logger().info(f'cannot get to cell {self.target}, skipping it')
+            self.skipped.add(self.target)
+            self._plan(new_target=True)
 
         cmd = Twist()
-
-        if self.state == 'driving':
-            travelled = math.hypot(x - self.anchor[0], y - self.anchor[1])
-            if travelled < self.side:
-                cmd.linear.x = self.speed
+        self.aim = None
+        self.alert = False
+        near = min(self.points, key=lambda p: math.hypot(*p), default=None)
+        if near is not None and math.hypot(*near) < self.half_width + 0.05:
+            # Too close to something to plan from: back straight away from it
+            # first -- or, without strafing, away along our own length. Set by
+            # the chassis, not `clearance`: a wide margin would have us bounce
+            # between the two sides of a gap we can perfectly well fit through.
+            self.doing = 'too close to something: moving away'
+            d = math.hypot(*near)
+            if self.strafe:
+                cmd.linear.x = -0.1 * near[0] / d
+                cmd.linear.y = -0.1 * near[1] / d
             else:
-                self.state = 'turning'
-                self.anchor = self.pose
-                self.target_yaw = yaw + math.pi / 2.0
-
-        elif self.state == 'turning':
-            error = angle_diff(self.target_yaw, yaw)
-            if abs(error) > 0.03:
-                cmd.angular.z = self.turn_speed * (1.0 if error > 0 else -1.0)
-            else:
-                self.state = 'driving'
-                self.anchor = self.pose
-                self.legs_done += 1
-                self.get_logger().info(f'corner {self.legs_done}')
-
+                # Reverse if it is ahead, drive on if it is behind; if it is
+                # beside us, turn to put it behind first.
+                away = math.atan2(-near[1], -near[0])
+                if abs(away) < 0.5:
+                    cmd.linear.x = 0.1
+                elif abs(away) > math.pi - 0.5:
+                    cmd.linear.x = -0.1
+                else:
+                    cmd.angular.z = self.turn_speed * (1.0 if away > 0 else -1.0)
+        elif self.wandering:
+            self._wander(cmd, x, y, yaw)
+        elif self.goal is not None:
+            self._drive(cmd, x, y, yaw)
+        else:
+            self.doing = 'nothing to do yet'
+        moving = cmd.linear.x != 0.0 or cmd.linear.y != 0.0
+        self._guard(cmd)
+        if moving and cmd.linear.x == 0.0 and cmd.linear.y == 0.0:
+            self.doing, self.alert = 'safety stop: something in the way', True
+        self.last_cmd = cmd
         self.pub.publish(cmd)
+
+    def _drive(self, cmd, x, y, yaw):
+        gx, gy = self.goal
+        d = math.hypot(gx - x, gy - y)
+        if d < self.best_dist - 0.05:
+            self.best_dist, self.best_time = d, self.get_clock().now()
+
+        # Aim for the furthest point along the path we can see straight to.
+        # Squeezed in somewhere tight, we may see none of it: then just follow
+        # the path a few cells ahead of where we are on it.
+        ax, ay = gx, gy
+        if not self.map.line_of_sight(x, y, gx, gy, skip=self.half_width):
+            ax, ay = self._path_point_ahead(x, y, 4)
+            for c in reversed(self.path[:40]):
+                cx, cy = self.map.centre(c)
+                if math.hypot(cx - x, cy - y) > 0.1 and \
+                        self.map.line_of_sight(x, y, cx, cy, skip=self.half_width):
+                    ax, ay = cx, cy
+                    break
+
+        self.aim = (ax, ay)
+        self.doing = 'heading for a new lane' if self.lane_start else 'driving down a lane'
+        a = math.hypot(ax - x, ay - y)
+        if a < 0.01:
+            return
+        v = self.speed
+        if not (self.lane_start and not self.strafe):
+            v *= max(0.2, min(1.0, d / 0.15))     # slow for the final few cm
+
+        if not self.strafe:
+            # Differential: pure pursuit. Drive the circular arc that passes
+            # through the aim point, starting along our current heading:
+            # curvature 2 sin(error) / distance. The arc bows out from the
+            # straight line the map checked, so keep the aim point close
+            # (0.4 m) and the error small (under ~46 deg): then it bows out
+            # under 9 cm. Further off course, turn on the spot first.
+            if a > self.lookahead:
+                ax, ay = x + (ax - x) * self.lookahead / a, y + (ay - y) * self.lookahead / a
+                a = self.lookahead
+            error = angle_diff(math.atan2(ay - y, ax - x), yaw)
+            if abs(error) > 0.8:
+                cmd.angular.z = self.turn_speed * (1.0 if error > 0 else -1.0)
+                return
+            curvature = 2.0 * math.sin(error) / a
+            if abs(curvature) * v > self.turn_speed:
+                v = self.turn_speed / abs(curvature)  # a tight arc: slow down for it
+            cmd.linear.x = v
+            cmd.angular.z = v * curvature
+            return
+
+        # Mecanum: slide straight at the aim point, whichever way we face.
+        error = angle_diff(self._lane_heading(), yaw)
+        if self.lane_start:
+            # On the way to a new lane: never head where the lidar cannot see.
+            # If sideways lanes need that, turn most of the way to face it, so
+            # that afterwards facing the other way round is the nearer heading.
+            travel = angle_diff(math.atan2(ay - y, ax - x), yaw)
+            if abs(travel) > self.view - math.radians(5):
+                self.facing_travel = self.sideways
+            elif abs(travel) < 0.6:
+                self.facing_travel = False
+            if self.facing_travel or abs(travel) > self.view - math.radians(5):
+                self._turn_on_spot(cmd, travel)
+                return
+            # Turn to face along the new lane while sliding there. An about
+            # turn could go either way: turn towards the way we are sliding,
+            # and the slide swings from one side, through dead ahead, to the
+            # other, always in view. Lane by lane that alternates left and
+            # right turns, so what odometry misjudges one way it gets back
+            # the other. Pace the slide to finish with the turn.
+            if abs(error) > 2.8:
+                wz = self.turn_speed if travel > 0 else -self.turn_speed
+            else:
+                wz = clamp(2.0 * error, self.turn_speed)
+            if abs(error) > 0.05:
+                v = max(0.05, min(v, d * abs(wz) / abs(error)))
+        else:
+            # On a lane: face along it, then hold that heading, so going
+            # round an obstacle is a sideways slide, not a turn.
+            if abs(error) > 0.2:
+                self._turn_on_spot(cmd, error)
+                return
+            wz = clamp(2.0 * error, self.turn_speed)
+
+        # World-frame velocity, into the robot's frame.
+        wx, wy = v * (ax - x) / a, v * (ay - y) / a
+        cmd.linear.x = math.cos(yaw) * wx + math.sin(yaw) * wy
+        cmd.linear.y = -math.sin(yaw) * wx + math.cos(yaw) * wy
+        cmd.angular.z = wz
+
+    def _wander(self, cmd, x, y, yaw):
+        """A random walk, deliberately ignoring the map: drive a random clear
+        direction for a few seconds or until something is close, then choose
+        again. A baseline to compare the planner with."""
+        now = self.get_clock().now()
+        limit = self.view - math.radians(5)
+        margin = self.half_width + self.stop_gap + 0.1
+
+        if self.leg_turn != 0.0:
+            if now.nanoseconds < self.leg_until.nanoseconds:
+                self.doing = 'wandering: turning'
+                cmd.angular.z = self.leg_turn * self.turn_speed
+                return
+            self.leg_turn = 0.0
+            self.leg_direction = None
+
+        travel = None
+        if self.leg_direction is not None:
+            travel = angle_diff(self.leg_direction, yaw)
+            if not self.strafe and abs(travel) > 0.2:
+                self.doing = 'wandering: turning'      # diff drive must face it first
+                self.leg_until = now + Duration(seconds=1.0)
+                cmd.angular.z = clamp(2.0 * travel, self.turn_speed)
+                return
+            if now.nanoseconds >= self.leg_until.nanoseconds or abs(travel) > limit \
+                    or self._free_distance(travel) < margin:
+                travel = None
+        if travel is None:
+            travel = self._new_leg(now, yaw, limit, margin)
+            if travel is None or not self.strafe:
+                return                                 # turning first
+
+        self.doing = 'wandering'
+        self.aim = (x + 0.4 * math.cos(self.leg_direction), y + 0.4 * math.sin(self.leg_direction))
+        if self.strafe:
+            cmd.linear.x = self.speed * math.cos(travel)
+            cmd.linear.y = self.speed * math.sin(travel)
+        else:
+            cmd.linear.x = self.speed
+            cmd.angular.z = clamp(2.0 * travel, self.turn_speed)
+
+    def _new_leg(self, now, yaw, limit, margin):
+        """Choose the next leg: its direction relative to us, or None if we are
+        to turn on the spot first. Sometimes turn anyway, or a mecanum robot
+        would only ever face one way."""
+        if self.rng.random() > 0.25:
+            for _ in range(30):
+                angle = self.rng.uniform(-limit, limit)
+                if self._free_distance(angle) > margin + 0.2:
+                    self.leg_direction = angle_diff(yaw + angle, 0.0)
+                    self.leg_until = now + Duration(seconds=self.rng.uniform(1.0, 5.0))
+                    return angle
+        self.leg_direction = None
+        self.leg_turn = self.rng.choice((-1.0, 1.0))
+        self.leg_until = now + Duration(seconds=self.rng.uniform(0.5, 2.5))
+        return None
+
+    def _free_distance(self, angle):
+        """How far the chassis could go at `angle` from straight ahead before
+        reaching anything the lidar sees, from its centre. inf if clear."""
+        dx, dy = math.cos(angle), math.sin(angle)
+        half = self.half_width + 0.02
+        best = math.inf
+        for px, py in self.points:
+            along = px * dx + py * dy
+            if 0.0 < along < best and abs(py * dx - px * dy) < half:
+                best = along
+        return best
+
+    def _lane_heading(self):
+        """Which way to face on the current lane."""
+        axis = self.frame[2]
+        if not self.sideways:
+            return axis + self.lane * math.pi / 2.0
+        # Across the lanes, whichever way round is nearer: both can strafe the
+        # lane, so there is no reason to turn.
+        across = axis + (self.lane + 1) * math.pi / 2.0
+        return across if abs(angle_diff(across, self.pose[2])) <= math.pi / 2.0 \
+            else across + math.pi
+
+    def _turn_on_spot(self, cmd, error):
+        """Turn towards `error` radians away. Turning is progress: the stuck
+        timer, which only sees distance to the goal, must not call it stuck."""
+        self.doing = 'turning on the spot'
+        self.best_time = self.get_clock().now()
+        direction = 1.0 if error > 0 else -1.0
+        cmd.angular.z = direction * min(self.turn_speed, max(0.3, 2.0 * abs(error)))
+
+    def _path_point_ahead(self, x, y, cells):
+        """The path cell `cells` steps beyond the one nearest us."""
+        if not self.path:
+            return self.goal
+        def gap(i):
+            cx, cy = self.map.centre(self.path[i])
+            return math.hypot(cx - x, cy - y)
+        near = min(range(len(self.path)), key=gap)
+        return self.map.centre(self.path[min(near + cells, len(self.path) - 1)])
+
+    def _guard(self, cmd):
+        """Last line of defence: never drive into anything, whatever was asked."""
+        v = math.hypot(cmd.linear.x, cmd.linear.y)
+        if v < 1e-6:
+            return
+        dx, dy = cmd.linear.x / v, cmd.linear.y / v
+        # The chassis plus 2 cm -- deliberately less than the planner's
+        # clearance, or the two fight in tight gaps and we never move.
+        half = self.half_width + 0.02
+        for px, py in self.points:
+            along = px * dx + py * dy
+            if 0.0 < along < self.half_width + self.stop_gap and abs(py * dx - px * dy) < half:
+                cmd.linear.x = cmd.linear.y = 0.0
+                return
+
+        # Any of that strip the lidar cannot see, go by what the map remembers.
+        # (Only there: the scan is newer wherever it can see.) From the
+        # chassis' centre onwards: sliding sideways, a corner can be alongside
+        # its back half.
+        x, y, yaw = self.pose
+        cos_yaw, sin_yaw = math.cos(yaw), math.sin(yaw)
+        step = self.map.res * 0.8
+        for i in range(int((self.half_width + self.stop_gap) / step) + 1):
+            for j in range(-int(half / step), int(half / step) + 1):
+                px = i * step * dx - j * step * dy      # in the robot's frame
+                py = i * step * dy + j * step * dx
+                if abs(math.atan2(py, px)) > self.view and self.map.is_occupied(
+                        self.map.cell(x + cos_yaw * px - sin_yaw * py,
+                                      y + sin_yaw * px + cos_yaw * py)):
+                    cmd.linear.x = cmd.linear.y = 0.0
+                    return
+
+    # --------------------------------------------------------------- planning
+
+    def _line_up_with_walls(self, x, y, yaw):
+        angle, sure = wall_angle(self.points)
+        axis = yaw + angle if sure > 0.3 else yaw
+        # Of the four wall directions, call the one nearest our heading "lane 0".
+        axis += round(angle_diff(yaw, axis) / (math.pi / 2)) * math.pi / 2
+        self.frame = (x, y, axis)
+        self.get_logger().info('walls at %.0f deg (%.0f%% sure); lanes start along %.0f deg'
+                               % (math.degrees(angle), 100 * sure, math.degrees(axis)))
+
+    def _cov_cell(self, x, y):
+        """Coverage cell holding (x, y). Cells are lane_width square, lined up
+        with the walls, with the start position at the centre of one."""
+        ox, oy, a = self.frame
+        u = math.cos(a) * (x - ox) + math.sin(a) * (y - oy)
+        v = -math.sin(a) * (x - ox) + math.cos(a) * (y - oy)
+        return (math.floor(u / self.lane_width + 0.5), math.floor(v / self.lane_width + 0.5))
+
+    def _cov_centre(self, c):
+        ox, oy, a = self.frame
+        u, v = c[0] * self.lane_width, c[1] * self.lane_width
+        return (ox + math.cos(a) * u - math.sin(a) * v, oy + math.sin(a) * u + math.cos(a) * v)
+
+    def _plan(self, new_target):
+        x, y, _ = self.pose
+        here = self._cov_cell(x, y)
+        dist, parent = self.map.bfs(self.map.cell(x, y))
+        spots = self._find_spots(dist)
+        todo = {c: s for c, s in spots.items()
+                if c not in self.covered and c not in self.skipped}
+
+        if not todo:
+            self.goal = self.target = None
+            # Just after redrawing the map nothing looks reachable. That is not
+            # the room being covered: wait for the lidar to fill it in.
+            if len(self.covered) > 1 and self._age(self.redrawn) > 3.0:
+                t = self._age(self.started)
+                self.get_logger().info(f'room covered in {t:.0f} s -- starting again')
+                self.covered = {here}
+                self.skipped.clear()
+            self.last_plan = self.get_clock().now()
+            return
+
+        if not new_target and self.target in spots:
+            target = self.target          # may be covered on the way: still the lane's end
+        else:
+            target = self._choose(here, todo, dist)
+
+        f = spots[target][0]
+        self.path = GridMap.path_to(parent, f)
+        if target != self.target:
+            self.best_dist, self.best_time = math.inf, self.get_clock().now()
+        self.target, self.goal = target, self.map.centre(f)
+        self.last_plan = self.get_clock().now()
+
+    def _find_spots(self, dist):
+        """For every coverage cell we can reach, the reachable spot in it
+        nearest its centre, as {cell: (occupancy cell, distance off centre)}."""
+        spots = {}
+        for f in dist:
+            if not self.map.traversable(f):
+                continue                  # only on the way out from a wall
+            fx, fy = self.map.centre(f)
+            c = self._cov_cell(fx, fy)
+            cx, cy = self._cov_centre(c)
+            off = math.hypot(fx - cx, fy - cy)
+            if c not in spots or off < spots[c][1]:
+                spots[c] = (f, off)
+        # A strip along a wall can be too narrow to hold any reachable floor
+        # of its own. Give such a cell the nearest we can get, just outside it.
+        edge = {}
+        for f in dist:
+            if not self.map.traversable(f):
+                continue
+            fx, fy = self.map.centre(f)
+            for dx, dy in ((0.1, 0.0), (-0.1, 0.0), (0.0, 0.1), (0.0, -0.1)):
+                c = self._cov_cell(fx + dx, fy + dy)
+                if c not in spots:
+                    cx, cy = self._cov_centre(c)
+                    off = math.hypot(fx - cx, fy - cy)
+                    if c not in edge or off < edge[c][1]:
+                        edge[c] = (f, off)
+        spots.update(edge)
+        self.reachable = {c: self.map.centre(f) for c, (f, _) in spots.items()}
+        return spots
+
+    def _choose(self, here, spots, dist):
+        """Pick the next coverage cell to drive to, and the lane direction.
+        `spots` holds only cells still to visit."""
+        def run(start, d):
+            """How many reachable, unvisited cells in a row from `start` in
+            direction d. Something in one of them is fine: the path goes round."""
+            n, c = 0, start
+            while True:
+                c = (c[0] + DIRS[d][0], c[1] + DIRS[d][1])
+                if c not in spots:
+                    return n
+                n += 1
+
+        # 1. A lane: drive straight down it to the last unvisited cell.
+        n = run(here, self.lane)
+        if n > 0:
+            di, dj = DIRS[self.lane]
+            self.lane_start = False
+            return (here[0] + n * di, here[1] + n * dj)
+
+        # 2. Otherwise the nearest unvisited cell, preferring the side of the
+        #    room we are working across (so we do not leave strips behind).
+        #    Without strafing, turning costs time too: count the turn to face
+        #    a cell as the distance we could have driven in that time.
+        self.lane_start = True
+        x, y, yaw = self.pose
+        across = abs(DIRS[self.lane][0])          # lanes along i (0): across is j (1)
+        def cost(c):
+            steps = dist[spots[c][0]] * self.map.res
+            side = (c[across] - here[across]) * self.side
+            turn = 0.0
+            if not self.strafe:
+                cx, cy = self.map.centre(spots[c][0])
+                turn = abs(angle_diff(math.atan2(cy - y, cx - x), yaw))
+            return steps + (self.lane_width if side < 0 else 0.0) + \
+                turn * self.speed / self.turn_speed
+        target = min(spots, key=cost)
+        side = (target[across] - here[across]) * self.side
+        if side < 0:
+            self.side = -self.side                # nothing left that way: work back
+
+        # New lane from there: point the way with the longest unvisited run.
+        old = self.lane
+        self.lane = max(range(4), key=lambda d: (run(target, d), d % 2 == old % 2,
+                                                 d == (old + 2) % 4))
+        return target
+
+    def _age(self, stamp):
+        if stamp is None:
+            return math.inf
+        return (self.get_clock().now() - stamp).nanoseconds / 1e9
+
+    # ------------------------------------------------------------------- SLAM
+
+    def _start_slam(self):
+        """Imported here so that without SLAM, nothing about it is needed."""
+        from nav_msgs.msg import OccupancyGrid
+        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+        from tf2_ros.buffer import Buffer
+        from tf2_ros.transform_listener import TransformListener
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        # slam_toolbox publishes /map once in a while and keeps the latest for
+        # late joiners, so this must ask for that or it may hear nothing.
+        latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                             durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.create_subscription(OccupancyGrid, 'map', self.on_slam_map, latched)
+
+    def _update_correction(self):
+        from tf2_ros import TransformException
+        try:
+            t = self.tf_buffer.lookup_transform('map', 'odom', Time()).transform
+        except TransformException:
+            return
+        new = (t.translation.x, t.translation.y, yaw_from_quaternion(t.rotation))
+        old = self.correction
+        if old is not None and math.hypot(new[0] - old[0], new[1] - old[1]) > 0.2:
+            # SLAM just moved us a long way, say on closing a loop. Our own map
+            # was drawn from the old position and is now wrong: start it again.
+            # The lidar redraws what is around us within a second.
+            self.get_logger().info('SLAM moved us by %.2f m: redrawing the map'
+                                   % math.hypot(new[0] - old[0], new[1] - old[1]))
+            self.map = GridMap(self.map.res, self.half_width + self.clearance)
+            self.target = self.goal = None
+            self.redrawn = self.get_clock().now()
+        self.correction = new
+
+    def on_slam_map(self, msg):
+        if self.viewer is None:
+            return
+        width = msg.info.width
+        occupied, free = [], []
+        for n, value in enumerate(msg.data):
+            j, i = n // width, n % width
+            if value >= 65:
+                occupied.append((i, j))
+            elif value >= 0:
+                if free and free[-1][0] == j and free[-1][1] + free[-1][2] == i:
+                    free[-1][2] += 1
+                else:
+                    free.append([j, i, 1])
+        self.viewer.set_slam_map({
+            'res': msg.info.resolution,
+            'ox': msg.info.origin.position.x, 'oy': msg.info.origin.position.y,
+            'occupied': occupied, 'free': free,
+        })
+
+    # -------------------------------------------------------------- live view
+
+    def _update_view(self):
+        if self.pose is None:
+            self.viewer.set_state({'waiting': True, 'doing': self.doing, 'alert': self.alert})
+            return
+        x, y, yaw = self.pose
+        state = {
+            'x': x, 'y': y, 'yaw': yaw,
+            'vx': self.last_cmd.linear.x, 'vy': self.last_cmd.linear.y,
+            'wz': self.last_cmd.angular.z,
+            'doing': self.doing, 'alert': self.alert,
+            'time': 0.0 if self.started is None else self._age(self.started),
+            'view': self.view,
+            'points': [(round(px, 3), round(py, 3)) for px, py in self.points],
+            'trail': self.trail,
+            'goal': self.goal, 'aim': self.aim,
+            'path': [self.map.centre(c) for c in self.path[::2] + self.path[-1:]],
+        }
+        if self.use_slam:
+            state['slam'] = {'correction': self.correction, 'odom_trail': self.odom_trail}
+        if self.frame is not None:
+            state['cover'] = {
+                'frame': self.frame, 'width': self.lane_width,
+                'done': sorted(self.covered),
+                'skipped': sorted(self.skipped),
+                'todo': [c for c in self.reachable
+                         if c not in self.covered and c not in self.skipped],
+            }
+        self.viewer.set_state(state)
+
+    def _update_view_map(self):
+        self.viewer.set_map(self.map.snapshot())
+
+    def stop_view(self):
+        if self.viewer is not None:
+            self.viewer.stop()
 
 
 def main(args=None):
@@ -98,6 +829,7 @@ def main(args=None):
         # in the ESP32 firmware is what stops the robot. See CLAUDE.md.
         if rclpy.ok():
             node.pub.publish(Twist())        # always stop the robot on exit
+        node.stop_view()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

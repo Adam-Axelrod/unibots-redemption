@@ -35,7 +35,15 @@ docker compose exec sim bash          # ROS is already sourced in here
 ros2 run robot_control square_driver
 ```
 
-Watch the browser: the robot drives a 1 m square and leaves a trail.
+Watch the browser: the robot maps the room with its lidar and sweeps all of it
+in lanes lined up with the walls, going round anything in its way, and leaves a
+trail.
+
+Open **http://localhost:8081** as well for the driver's own view of things:
+where it thinks it is, what the lidar sees right now, its map, the cells it has
+visited, and where it is heading. The page at `:8080` shows where the robot
+*really* is, and only exists in simulation. If you started `docker compose up`
+before this port was added, run `docker compose down` and start it again.
 
 Try the others:
 
@@ -91,9 +99,27 @@ your code moves between them without changes:
 | `/scan` | `sensor_msgs/LaserScan` | robot → you: lidar distances |
 | `/odom` | `nav_msgs/Odometry` | robot → you: where it thinks it is |
 
-In the simulator, `linear.y` strafes sideways. **The real robot cannot strafe yet**:
-it has mecanum wheels, but Yahboom's firmware ignores `linear.y`. See
-[esp32-board.md](docs/hardware/esp32-board.md#firmware).
+In the simulator, `linear.y` strafes sideways. The real robot cannot
+strafe with the current Yahboom firmware, which ignores `linear.y`.
+See [esp32-board.md](docs/hardware/esp32-board.md#firmware).
+
+`square_driver` uses sideways lanes by default, which require working strafe
+control. Until custom firmware is validated, use `--ros-args -p drive:=diff`
+on the real robot.
+If something has to face the way it is going, like a front-mounted collector, use
+`--ros-args -p lane_style:=forward`: it faces along each lane, and slides across
+to the next one while turning round.
+
+It ignores lidar beams more than 100° from straight ahead, because the chassis
+can block the lidar's rear and look like something touching the robot. If yours
+has a clear view all round, run it with `--ros-args -p lidar_view:=180.0`.
+
+**Testing on a prototype with ordinary wheels?** Run the driver with
+`--ros-args -p drive:=diff`: it never sends `linear.y`, and turns to face where
+it is going instead. Nothing else changes -- the ESP32 still takes `/cmd_vel`,
+and with `linear.y` at 0 its mecanum maths is plain left/right tank steering.
+Launch the simulator with `drive:=diff` too, and it ignores `linear.y` the same
+way.
 
 ## If something breaks
 
@@ -116,3 +142,43 @@ goes quiet for half a second. Publish continuously on a timer, not once.
 
 See [docs/hardware/](docs/hardware/README.md) for the hardware and first-time Pi
 setup, and [CLAUDE.md](CLAUDE.md) for how it all fits together.
+
+To watch `square_driver` on the real robot, open
+**http://raspberrypi.tail6c0787.ts.net:8081** in a normal browser on a laptop on
+the Tailscale network. Use the full name: the short `raspberrypi` only works on
+Adam's own tailnet, not for laptops the Pi is shared with. If it won't load, run
+`ssh -L 8081:localhost:8081 rpi5` and open http://localhost:8081 instead.
+
+What to look for:
+
+- **The orange lidar dots should sit on the white walls.** If they don't, or the
+  walls look thick, doubled or bent, its position estimate has drifted.
+- **Things should appear on the same side as in real life.** If not, the scan is
+  mirrored or rotated: stop before it steers towards things.
+- **Red text at the top** means a safety stop, or no lidar data.
+
+The page only reads, so it can't drive the robot. For a match, turn it off with
+`--ros-args -p view_port:=0`, since the rules ban remote control (R8).
+
+### Comparing random movement and SLAM
+
+`square_driver` can run four ways, to compare on the same floor:
+
+| | Position from odometry | Position from SLAM |
+|---|---|---|
+| **Planned lanes** | `square_driver` | add `-p use_slam:=true` |
+| **Random walk** | add `-p motion:=random` | add both |
+
+For SLAM, rebuild the image once with `docker compose --profile robot up --build
+robot`, which adds `slam_toolbox`. Then start it in its own terminal before the
+driver:
+
+```bash
+docker compose exec robot bash
+ros2 launch robot_bringup slam.launch.py
+```
+
+The live view then adds SLAM's map in purple, the odometry-only trail as a dotted
+line, and how far SLAM has corrected odometry. A correction that keeps growing
+means odometry is drifting. On the page, compare **cells visited** after a set
+time, and how long it takes to log `room covered`.

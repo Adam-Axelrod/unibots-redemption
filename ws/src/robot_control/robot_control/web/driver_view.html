@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Driver View</title>
+<style>
+  :root {
+    --bg: #0f1419; --panel: #171d24; --line: #2a333d;
+    --ink: #e6edf3; --dim: #8b98a5;
+    --robot: #4dd4c0; --hit: #f5a35c; --wall: #dfe6ec; --plan: #e0c341;
+    --done: #24513f; --todo: #1e2c3d; --skip: #5a2b2b; --stop: #e5534b;
+    --slam: #c678dd;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  header {
+    padding: 12px 16px; border-bottom: 1px solid var(--line);
+    display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap;
+  }
+  h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  #doing { color: var(--plan); }
+  #doing.alert { color: var(--stop); font-weight: 600; }
+  #status { margin-left: auto; color: var(--dim); }
+  #status.live { color: var(--robot); }
+  main { display: flex; padding: 16px; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+  #wrap { flex: 1; min-width: 300px; }
+  canvas {
+    width: 100%; aspect-ratio: 1; background: var(--panel); display: block;
+    border: 1px solid var(--line); border-radius: 8px;
+  }
+  aside { width: 260px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 12px; margin-bottom: 12px;
+  }
+  .card h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--dim); margin: 0 0 8px; font-weight: 600;
+  }
+  .row { display: flex; justify-content: space-between; gap: 8px; }
+  .row span:last-child { color: var(--robot); text-align: right; }
+  label { display: flex; gap: 8px; align-items: center; cursor: pointer; }
+  .swatch { width: 12px; height: 12px; border-radius: 2px; flex: none; }
+  .hint { color: var(--dim); font-size: 12px; margin: 8px 0 0; }
+  @media (max-width: 720px) { aside { width: 100%; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Driver View</h1>
+  <span id="doing">waiting for the driver…</span>
+  <span id="status">connecting…</span>
+</header>
+
+<main>
+  <div id="wrap"><canvas id="c" width="900" height="900"></canvas></div>
+  <aside>
+    <div class="card">
+      <h2>Where it thinks it is</h2>
+      <div class="row"><span>x</span><span id="px">–</span></div>
+      <div class="row"><span>y</span><span id="py">–</span></div>
+      <div class="row"><span>heading</span><span id="pt">–</span></div>
+    </div>
+    <div class="card">
+      <h2>What it's commanding</h2>
+      <div class="row"><span>forward</span><span id="vx">–</span></div>
+      <div class="row"><span>strafe</span><span id="vy">–</span></div>
+      <div class="row"><span>turn</span><span id="wz">–</span></div>
+    </div>
+    <div class="card">
+      <h2>Progress</h2>
+      <div class="row"><span>time</span><span id="time">–</span></div>
+      <div class="row"><span>cells visited</span><span id="cells">–</span></div>
+      <div class="row"><span>lidar points</span><span id="npts">–</span></div>
+    </div>
+    <div class="card" id="slam-card" hidden>
+      <h2>SLAM's correction to odometry</h2>
+      <div class="row"><span>position</span><span id="slam-d">–</span></div>
+      <div class="row"><span>heading</span><span id="slam-a">–</span></div>
+      <p class="hint">How far wheel odometry has drifted, according to SLAM.</p>
+    </div>
+    <div class="card">
+      <h2>Show</h2>
+      <label><input type="checkbox" id="s-scan" checked>
+        <span class="swatch" style="background:var(--hit)"></span>lidar now</label>
+      <label><input type="checkbox" id="s-map" checked>
+        <span class="swatch" style="background:var(--wall)"></span>map: walls</label>
+      <label><input type="checkbox" id="s-cov" checked>
+        <span class="swatch" style="background:var(--done)"></span>visited cells</label>
+      <label><input type="checkbox" id="s-plan" checked>
+        <span class="swatch" style="background:var(--plan)"></span>plan</label>
+      <label><input type="checkbox" id="s-trail" checked>
+        <span class="swatch" style="background:#3b6ea8"></span>trail</label>
+      <div id="slam-show" hidden>
+        <label><input type="checkbox" id="s-slam" checked>
+          <span class="swatch" style="background:var(--slam)"></span>SLAM's map</label>
+        <label><input type="checkbox" id="s-odom" checked>
+          <span class="swatch" style="background:#7d8b99"></span>trail, odometry only</label>
+      </div>
+      <p class="hint">This is what the robot <em>believes</em>. If its walls look bent or doubled, its position estimate has drifted.</p>
+    </div>
+  </aside>
+</main>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const on = id => document.getElementById(id).checked;
+let state = null, grid = null, slamGrid = null;
+
+// ---- world -> canvas. +x right, +y up, centred on what has been seen -------
+let scale = 100, offX = 450, offY = 450;
+function fit() {
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  const add = (x, y) => {
+    x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+  };
+  if (grid) for (const [i, j] of grid.occupied) add(i * grid.res, j * grid.res);
+  if (slamGrid) for (const [i, j] of slamGrid.occupied) {
+    add(slamGrid.ox + i * slamGrid.res, slamGrid.oy + j * slamGrid.res);
+  }
+  if (state) add(state.x, state.y);
+  if (!isFinite(x0)) return;
+  const size = Math.max(x1 - x0, y1 - y0, 1.5) + 0.5;
+  scale = canvas.width / size;
+  offX = canvas.width / 2 - (x0 + x1) / 2 * scale;
+  offY = canvas.height / 2 + (y0 + y1) / 2 * scale;
+}
+const tx = x => x * scale + offX;
+const ty = y => -y * scale + offY;
+
+// ---- drawing ---------------------------------------------------------------
+function draw() {
+  fit();
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (grid) {
+    // Open floor it has seen, dim, so unknown areas stand out as background.
+    const c = grid.res * scale + 0.5;
+    ctx.fillStyle = '#1b232c';
+    for (const [j, i0, n] of grid.free) {
+      ctx.fillRect(tx(i0 * grid.res), ty((j + 1) * grid.res), n * grid.res * scale + 0.5, c);
+    }
+  }
+
+  if (state && state.cover && on('s-cov')) {
+    const [ox, oy, a] = state.cover.frame, w = state.cover.width;
+    const cell = (cells, colour) => {
+      ctx.fillStyle = colour;
+      for (const [i, j] of cells) {
+        ctx.save();
+        ctx.translate(tx(ox + Math.cos(a) * i * w - Math.sin(a) * j * w),
+                      ty(oy + Math.sin(a) * i * w + Math.cos(a) * j * w));
+        ctx.rotate(-a);
+        const s = w * scale - 3;
+        ctx.fillRect(-s / 2, -s / 2, s, s);
+        ctx.restore();
+      }
+    };
+    cell(state.cover.todo, css('--todo'));
+    cell(state.cover.done, css('--done'));
+    cell(state.cover.skipped, css('--skip'));
+  }
+
+  if (grid && on('s-map')) {
+    const c = grid.res * scale + 0.5;
+    ctx.fillStyle = 'rgba(223,230,236,0.10)';
+    for (const [i, j] of grid.blocked) ctx.fillRect(tx(i * grid.res), ty((j + 1) * grid.res), c, c);
+    ctx.fillStyle = css('--wall');
+    for (const [i, j] of grid.occupied) ctx.fillRect(tx(i * grid.res), ty((j + 1) * grid.res), c, c);
+  }
+
+  if (slamGrid && on('s-slam')) {
+    const r = slamGrid.res, c = r * scale + 0.5;
+    ctx.fillStyle = css('--slam');
+    for (const [i, j] of slamGrid.occupied) {
+      ctx.fillRect(tx(slamGrid.ox + i * r), ty(slamGrid.oy + (j + 1) * r), c, c);
+    }
+  }
+
+  if (!state) return;
+
+  if (state.slam && on('s-odom')) {
+    ctx.strokeStyle = '#7d8b99'; ctx.lineWidth = 1.5; ctx.setLineDash([3, 4]); ctx.beginPath();
+    state.slam.odom_trail.forEach(([x, y], i) => i ? ctx.lineTo(tx(x), ty(y)) : ctx.moveTo(tx(x), ty(y)));
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  if (state.trail && on('s-trail')) {
+    ctx.strokeStyle = '#3b6ea8'; ctx.lineWidth = 2; ctx.beginPath();
+    state.trail.forEach(([x, y], i) => i ? ctx.lineTo(tx(x), ty(y)) : ctx.moveTo(tx(x), ty(y)));
+    ctx.stroke();
+  }
+
+  if (on('s-plan')) drawPlan(state);
+  if (on('s-scan')) drawScan(state);
+  drawRobot(state);
+}
+
+function drawPlan(s) {
+  ctx.strokeStyle = css('--plan'); ctx.fillStyle = css('--plan');
+  if (s.path && s.path.length > 1) {
+    ctx.lineWidth = 2; ctx.setLineDash([8, 6]); ctx.beginPath();
+    s.path.forEach(([x, y], i) => i ? ctx.lineTo(tx(x), ty(y)) : ctx.moveTo(tx(x), ty(y)));
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+  if (s.goal) {
+    ctx.lineWidth = 3; ctx.beginPath();
+    ctx.arc(tx(s.goal[0]), ty(s.goal[1]), 0.07 * scale, 0, 2 * Math.PI); ctx.stroke();
+  }
+  if (s.aim) {
+    ctx.beginPath(); ctx.arc(tx(s.aim[0]), ty(s.aim[1]), 0.025 * scale, 0, 2 * Math.PI); ctx.fill();
+  }
+}
+
+function drawScan(s) {
+  // The arc shows what the lidar can see; beyond it the robot is blind.
+  const r = 0.35 * scale, front = -s.yaw;
+  ctx.fillStyle = 'rgba(245,163,92,0.07)';
+  ctx.beginPath(); ctx.moveTo(tx(s.x), ty(s.y));
+  ctx.arc(tx(s.x), ty(s.y), r, front - s.view, front + s.view); ctx.closePath(); ctx.fill();
+
+  ctx.fillStyle = css('--hit');
+  const c = Math.cos(s.yaw), n = Math.sin(s.yaw), d = Math.max(2.5, 0.012 * scale);
+  for (const [px, py] of s.points) {
+    ctx.fillRect(tx(s.x + c * px - n * py) - d / 2, ty(s.y + n * px + c * py) - d / 2, d, d);
+  }
+}
+
+function drawRobot(s) {
+  const h = 0.10 * scale;                     // the 200 mm chassis, to scale
+  ctx.save();
+  ctx.translate(tx(s.x), ty(s.y));
+  ctx.rotate(-s.yaw);
+  ctx.strokeStyle = ctx.fillStyle = css(s.alert ? '--stop' : '--robot');
+  ctx.lineWidth = 2; ctx.strokeRect(-h, -h, 2 * h, 2 * h);
+  ctx.beginPath(); ctx.moveTo(h, 0); ctx.lineTo(0, 0.6 * h); ctx.lineTo(0, -0.6 * h); ctx.closePath(); ctx.fill();
+  ctx.restore();
+
+  // Which way it is being told to move.
+  const v = Math.hypot(s.vx, s.vy);
+  if (v > 0.01) {
+    const c = Math.cos(s.yaw), n = Math.sin(s.yaw), k = 1.2;   // seconds ahead
+    ctx.strokeStyle = css('--robot'); ctx.lineWidth = 3; ctx.beginPath();
+    ctx.moveTo(tx(s.x), ty(s.y));
+    ctx.lineTo(tx(s.x + (c * s.vx - n * s.vy) * k), ty(s.y + (n * s.vx + c * s.vy) * k));
+    ctx.stroke();
+  }
+}
+
+// ---- live data -------------------------------------------------------------
+const fmt = (v, n = 2) => (typeof v === 'number' ? v.toFixed(n) : '–');
+const text = (id, v) => { document.getElementById(id).textContent = v; };
+let pending = false;
+function redraw() {
+  if (pending) return;
+  pending = true;
+  requestAnimationFrame(() => { pending = false; draw(); });
+}
+
+const src = new EventSource('/stream');
+const status = document.getElementById('status');
+src.onopen = () => { status.textContent = 'live'; status.className = 'live'; };
+src.onerror = () => { status.textContent = 'disconnected'; status.className = ''; };
+src.addEventListener('map', e => { grid = JSON.parse(e.data); redraw(); });
+src.addEventListener('slam', e => { slamGrid = JSON.parse(e.data); redraw(); });
+src.addEventListener('state', e => {
+  const next = JSON.parse(e.data);
+  const doing = document.getElementById('doing');
+  doing.textContent = next.doing;
+  doing.className = next.alert ? 'alert' : '';
+  if (next.waiting) return;                   // no pose yet: nothing to draw
+  state = next;
+  text('px', fmt(state.x) + ' m'); text('py', fmt(state.y) + ' m');
+  text('pt', fmt(state.yaw * 180 / Math.PI, 0) + '°');
+  text('vx', fmt(state.vx) + ' m/s'); text('vy', fmt(state.vy) + ' m/s');
+  text('wz', fmt(state.wz) + ' rad/s');
+  text('time', fmt(state.time, 0) + ' s');
+  if (state.cover) text('cells', state.cover.done.length + ' of ' + (state.cover.done.length + state.cover.todo.length));
+  text('npts', state.points.length);
+  if (state.slam) {
+    document.getElementById('slam-card').hidden = false;
+    document.getElementById('slam-show').hidden = false;
+    const c = state.slam.correction;
+    if (c) {
+      text('slam-d', fmt(Math.hypot(c[0], c[1])) + ' m');
+      text('slam-a', fmt(c[2] * 180 / Math.PI, 1) + '°');
+    }
+  }
+  redraw();
+});
+document.querySelectorAll('input').forEach(i => i.addEventListener('change', redraw));
+</script>
+</body>
+</html>

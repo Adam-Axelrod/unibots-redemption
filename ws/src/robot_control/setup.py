@@ -6,6 +6,9 @@ setup(
     name=package_name,
     version='0.1.0',
     packages=[package_name],
+    # driver_view.html lives inside the package so driver_view.py can find it next to itself
+    package_data={package_name: ['web/*.html']},
+    include_package_data=True,
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),

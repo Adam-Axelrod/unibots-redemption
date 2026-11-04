@@ -15,6 +15,7 @@ FROM ros:humble-ros-base
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3-colcon-common-extensions \
         ros-humble-tf2-ros \
+        ros-humble-slam-toolbox \
         xz-utils \
     && rm -rf /var/lib/apt/lists/*
 

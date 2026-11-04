@@ -2,6 +2,7 @@
 
     ros2 launch robot_bringup sim.launch.py
     ros2 launch robot_bringup sim.launch.py world:=furnished_room
+    ros2 launch robot_bringup sim.launch.py drive:=diff    # wheels that cannot strafe
 
 Then open http://localhost:8080 and, in another terminal, run whatever you are
 working on:  ros2 run robot_control square_driver
@@ -15,6 +16,7 @@ from launch_ros.actions import Node
 def generate_launch_description():
     world = LaunchConfiguration('world')
     port = LaunchConfiguration('viz_port')
+    drive = LaunchConfiguration('drive')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -24,13 +26,17 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'viz_port', default_value='8080',
             description='port for the browser visualiser'),
+        DeclareLaunchArgument(
+            'drive', default_value='mecanum',
+            description="mecanum | diff -- diff ignores linear.y, like wheels "
+                        'that cannot strafe'),
 
         Node(
             package='robot_sim',
             executable='sim_node',
             name='sim_node',
             output='screen',
-            parameters=[{'world': world, 'viz_port': port}],
+            parameters=[{'world': world, 'viz_port': port, 'drive': drive}],
         ),
 
         # The sim publishes odom -> base_footprint itself. These two fill in the
