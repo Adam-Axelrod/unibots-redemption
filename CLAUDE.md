@@ -33,9 +33,8 @@ motor. That is the whole design:
 /odom     (Odometry)   robot -> you      pose + velocity, frame odom -> base_footprint
 ```
 
-⚠️ **`linear.y` only works in the simulator for now.** Yahboom's firmware ignores
-it, so code that strafes passes in the simulator and sits still on the real robot.
-Our own firmware, to fix this, is in progress on `feat/custom-firmware`.
+`linear.y` strafes only with [our firmware](firmware/README.md), which is what the
+board runs now. Yahboom's ignores it.
 
 When adding a feature, add it against these topics. If you find yourself
 branching on "am I in simulation", something has gone wrong.
@@ -64,7 +63,7 @@ The board is Yahboom's **MicroROS Control Board**, built on an
 **ESP32-S3-WROOM-1U-N4R2**. Not the STM32F103 board Yahboom also sells for the
 Pi 5 — different firmware, different IMU, near-identical marketing copy.
 
-It does all the real-time work: skid-steer kinematics, per-wheel PID using
+It does all the real-time work: mecanum kinematics, per-wheel PID using
 the encoders (decoded in hardware by the ESP32's PCNT units), and integrating
 wheel odometry. **The Raspberry Pi is never in the motor control loop.**
 
@@ -72,10 +71,10 @@ The motor drivers and encoders connect only to this MCU. There is no motor
 wiring to the Pi at all — the single USB cable is the entire link. The board
 also powers the Pi, over USB-C at 5.1 V / 5 A.
 
-Firmware ships as a prebuilt `.bin`, so there is **no source to modify**. You
-almost never touch it. What you do change is stored configuration, via
-`scripts/config_robot.py`: motor PID gains, servo offsets, `CAR_TYPE`, ROS
-domain ID, WiFi.
+**The board runs [our own firmware](firmware/README.md)**, because Yahboom's prebuilt
+one cannot strafe. Settings are in `firmware/main/chassis.h` and `config.h`: change,
+rebuild, reflash. The Yahboom-specific details below, such as
+`scripts/config_robot.py`, only apply if the board is restored to Yahboom's firmware.
 
 ⚠️ `config_robot.py` talks at **115200 baud** using Yahboom's own byte protocol.
 The micro-ROS agent uses **921600**. Same cable, two protocols, mutually
@@ -194,8 +193,7 @@ The full rules are in [the rulebook](docs/unibots-rulebook-2026-27-v1.0.pdf).
 - **Python only.** No C++ packages. Keep it that way unless there is a
   performance reason. The one exception is [`firmware/`](firmware/README.md), our
   own C firmware for the board, because Yahboom's ignores `linear.y` and so cannot
-  strafe. It has not run on the board yet, so the sections above still describe
-  Yahboom's firmware.
+  strafe.
 - **Register new nodes in `setup.py`** under `console_scripts`, or `ros2 run`
   will not find them. This catches everyone once.
 - **Parameters, not constants.** Use `declare_parameter`, override with

@@ -77,6 +77,12 @@ Notes on that driver, should you need it:
 
 ## Mounting
 
+**The lidar's arrow must point at the front of the robot.** The arrow is angle 0, and
+the code assumes angle 0 is straight ahead. If it points another way, wall sensing and
+collision avoidance look the wrong way, with no error.
+
+The battery wires currently sit in the lidar's view, at about +145° and 13 cm.
+
 The lidar must see over everything else on the robot. Anything on the chassis
 at the same height as the lidar shows up in every scan as a fixed blind spot.
 Its height and offset from the robot's centre go in `robot.launch.py`

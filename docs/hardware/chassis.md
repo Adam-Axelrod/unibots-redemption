@@ -18,14 +18,14 @@ screw. Measure the printed robot against a 200 mm box before an event.
 
 ## Wheels
 
-**Mecanum**, but the real robot **cannot strafe yet**: the simulator honours
-`linear.y`, and Yahboom's firmware ignores it
-([esp32-board.md](esp32-board.md#firmware)).
+**Mecanum.** `linear.y` in `/cmd_vel` moves the robot sideways, using
+[our own firmware](../../firmware/README.md). Yahboom's ignores it. Strafing needs more
+power than driving forward: on the floor it stalled at a 60% PWM cap and works at 85%.
 
 Mecanum wheels come as two left-handed and two right-handed wheels, and must
 be fitted in the right pattern or the robot cannot strafe. Looking down on the
 robot, the rollers on the tops of the four wheels should form an **X**. To be
-sure, test it with the wheels on the floor, once the firmware can strafe: a pure
+sure, test it with the wheels on the floor: a pure
 strafe command (`linear.y` only) should slide the robot sideways. If it spins or
 barely moves instead, swap the wheels diagonally.
 

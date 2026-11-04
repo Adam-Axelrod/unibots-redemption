@@ -7,8 +7,19 @@ and always reports `vy` as 0, so a mecanum robot cannot strafe on it. Its source
 is not published, and no setting changes this. This firmware does the same job
 with mecanum kinematics, on the same topics, so nothing on the Pi has to change.
 
-**Status: compiles for the ESP32-S3, but has never run on the board.** Only the code
-in `test/` has been run. Follow the bring-up below in order.
+**Status: running on the robot, and it strafes on the floor** at 0.3 and 0.5 m/s. Only
+brief runs so far. Not yet checked or done:
+
+- Strafing at low speed. 0.15 m/s stalled at the old 60% power cap and has not been
+  retried at 85%, and the gains are still starting values
+- Motor temperature at 85% power, and turning on the floor
+- It turned about 6° over a 30 cm strafe, so heading will drift
+- `/imu` has no start-up calibration, so it shows a small gyro drift and reads about
+  10.0 m/s² at rest
+- Encoder pulses per wheel turn (1040) have not been checked
+
+The bring-up below is how to set up a board from Yahboom's firmware. It has been done
+on ours. The backup is on the Pi in `~/firmware-backup/`, not in git.
 
 ## What it does
 

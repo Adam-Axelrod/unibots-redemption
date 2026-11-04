@@ -173,9 +173,8 @@ ros2 topic pub -r 10 /cmd_vel geometry_msgs/Twist "{linear: {x: 0.1}}"
 ```
 
 All four wheels should turn forwards. If one turns backwards, swap that
-motor's two power wires. Then try `angular: {z: 0.5}` (turn left). Don't expect
-`linear: {y: 0.1}` to do anything: Yahboom's firmware
-[cannot strafe](esp32-board.md#firmware).
+motor's two power wires. Then try `angular: {z: 0.5}` (turn left). Then `linear: {y: 0.1}` (strafe left). That needs
+[our own firmware](../../firmware/README.md): on Yahboom's, it does nothing.
 
 Once both look right, put it on the floor and run a pattern:
 
@@ -225,5 +224,6 @@ takes seconds, not minutes.
 | `config_robot.py` hangs or reads garbage | the agent is still running; stop it first |
 | `/odom` works, `/scan` doesn't | lidar cable to the board's radar port |
 | A wheel turns the wrong way | swap that motor's M+ and M- wires |
-| Strafe commands do nothing | expected: Yahboom's firmware [cannot strafe](esp32-board.md#firmware) |
+| Strafe commands do nothing | the board is on Yahboom's firmware, which [cannot strafe](esp32-board.md#firmware). Flash [ours](../../firmware/README.md) |
+| `config_robot.py` gets no answer at all | the board is on [our firmware](../../firmware/README.md), which does not support it. Skip step 5: settings are in `firmware/main/` |
 | Pi shows a low-voltage warning or reboots | battery flat, or the Pi is not powered from the board's 5 A output |
