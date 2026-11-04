@@ -101,6 +101,24 @@ class GridMap:
             else:
                 self.blocked.pop(n, None)
 
+    def snapshot(self):
+        """The map as plain lists, for driver_view: occupied and blocked cells,
+        and free cells as (row j, first i, how many), which is far shorter."""
+        occupied, free = [], []
+        for c, s in self.score.items():
+            if s >= self.OCCUPIED:
+                occupied.append(c)
+            else:
+                free.append(c)
+        runs = []
+        for i, j in sorted(free, key=lambda c: (c[1], c[0])):
+            if runs and runs[-1][0] == j and runs[-1][1] + runs[-1][2] == i:
+                runs[-1][2] += 1
+            else:
+                runs.append([j, i, 1])
+        blocked = [c for c in self.blocked if self.is_free(c)]
+        return {'res': self.res, 'occupied': occupied, 'blocked': blocked, 'free': runs}
+
     # ------------------------------------------------------------- planning
 
     def bfs(self, start):

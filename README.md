@@ -39,6 +39,12 @@ Watch the browser: the robot maps the room with its lidar and sweeps all of it
 in lanes lined up with the walls, going round anything in its way, and leaves a
 trail.
 
+Open **http://localhost:8081** as well for the driver's own view of things:
+where it thinks it is, what the lidar sees right now, its map, the cells it has
+visited, and where it is heading. The page at `:8080` shows where the robot
+*really* is, and only exists in simulation. If you started `docker compose up`
+before this port was added, run `docker compose down` and start it again.
+
 Try the others:
 
 ```bash
@@ -94,8 +100,11 @@ your code moves between them without changes:
 | `/odom` | `nav_msgs/Odometry` | robot → you: where it thinks it is |
 
 The car has mecanum wheels, so `linear.y` really does strafe sideways.
-`square_driver` uses that by default: it slides round obstacles without turning,
-and slides across to the next lane while turning round.
+`square_driver` uses that by default: it faces across its lanes and strafes down
+them, left then right, stepping forward between them, so it hardly needs to turn.
+If something has to face the way it is going, like a front-mounted collector, use
+`--ros-args -p lane_style:=forward`: it faces along each lane, and slides across
+to the next one while turning round.
 
 It ignores lidar beams more than 100° from straight ahead, because the chassis
 can block the lidar's rear and look like something touching the robot. If yours
@@ -129,3 +138,18 @@ goes quiet for half a second. Publish continuously on a timer, not once.
 
 See [docs/hardware/](docs/hardware/README.md) for the hardware and first-time Pi
 setup, and [CLAUDE.md](CLAUDE.md) for how it all fits together.
+
+To watch `square_driver` on the real robot, open **http://raspberrypi:8081** in a
+browser on a laptop on the Tailscale network. If that name doesn't work, run
+`ssh -L 8081:localhost:8081 rpi5` and open http://localhost:8081 instead.
+
+What to look for:
+
+- **The orange lidar dots should sit on the white walls.** If they don't, or the
+  walls look thick, doubled or bent, its position estimate has drifted.
+- **Things should appear on the same side as in real life.** If not, the scan is
+  mirrored or rotated: stop before it steers towards things.
+- **Red text at the top** means a safety stop, or no lidar data.
+
+The page only reads, so it can't drive the robot. For a match, turn it off with
+`--ros-args -p view_port:=0`, since the rules ban remote control (R8).

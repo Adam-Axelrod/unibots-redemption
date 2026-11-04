@@ -21,10 +21,13 @@ and lines the lanes up with them, so it does not matter which way it is facing.
 
 How it drives depends on the `drive` parameter:
 
-    mecanum  (default) drives every lane facing forwards and slides sideways
-             round obstacles without turning. Between lanes it slides straight
-             across to the next one, turning round as it goes, the way that
-             keeps its direction of travel where the lidar can see.
+    mecanum  (default) slides straight at its target without turning wherever
+             it can. `lane_style` says which way it faces on the lanes:
+               sideways  faces across them and strafes down them, left then
+                         right, stepping forward between: nearly no turning
+               forward   faces along them, like a lawnmower. Between lanes it
+                         slides across, turning round as it goes, the way that
+                         keeps its direction of travel where the lidar can see
     diff     for wheels that cannot strafe: never sends linear.y. It follows
              the path by pure pursuit -- curving towards a point `lookahead`
              ahead -- and only turns on the spot when well off course. Turns
@@ -43,7 +46,10 @@ stopping when the lidar goes quiet, that is the collision avoidance the rules
 ask for (R10).
 
 Run it:   ros2 run robot_control square_driver
-Watch it: http://localhost:8080
+Watch it: http://localhost:8080   the simulator: where the robot really is
+          http://localhost:8081   driver_view: what the robot believes, its map
+                                  and its plan. On the real robot too, at the
+                                  Pi's name instead of localhost.
 """
 import math
 
@@ -57,6 +63,7 @@ from sensor_msgs.msg import LaserScan
 
 from robot_control.util import yaw_from_quaternion, angle_diff
 from robot_control.coverage_map import GridMap, wall_angle
+from robot_control.driver_view import DriverView
 
 # Lane directions in coverage-grid steps: along the walls, then round by 90 deg.
 DIRS = [(1, 0), (0, 1), (-1, 0), (0, -1)]
@@ -72,13 +79,14 @@ class SquareDriver(Node):
         super().__init__('square_driver')
 
         self.declare_parameter('drive', 'mecanum')     # or 'diff', if it cannot strafe
+        self.declare_parameter('lane_style', 'sideways')  # mecanum: or 'forward'
         self.declare_parameter('speed', 0.25)          # m/s
         self.declare_parameter('turn_speed', 0.8)      # rad/s
         self.declare_parameter('lookahead', 0.4)       # m; diff drive aims this far ahead
         self.declare_parameter('lane_width', 0.4)      # m between lanes
         self.declare_parameter('sweep_side', 'left')   # which way to work across the room first
         self.declare_parameter('half_width', 0.10)     # half the 200 mm chassis
-        self.declare_parameter('clearance', 0.05)      # m spare round the chassis
+        self.declare_parameter('clearance', 0.08)      # m spare round the chassis
         self.declare_parameter('stop_gap', 0.06)       # never drive closer than this
         self.declare_parameter('lidar_view', 100.0)    # deg either side of ahead it can see
         self.declare_parameter('map_resolution', 0.05) # m per occupancy cell
@@ -86,6 +94,7 @@ class SquareDriver(Node):
         self.declare_parameter('replan_period', 1.0)   # s between re-plans
         self.declare_parameter('stuck_time', 4.0)      # s stuck before skipping a cell
         self.declare_parameter('scan_timeout', 0.5)    # s; stop if the lidar goes quiet
+        self.declare_parameter('view_port', 8081)      # driver_view web page; 0 turns it off
 
         self.speed = self.get_parameter('speed').value
         self.turn_speed = self.get_parameter('turn_speed').value
@@ -104,6 +113,10 @@ class SquareDriver(Node):
         if drive not in ('mecanum', 'diff'):
             raise ValueError(f"drive must be 'mecanum' or 'diff', not '{drive}'")
         self.strafe = drive == 'mecanum'
+        lane_style = self.get_parameter('lane_style').value
+        if lane_style not in ('sideways', 'forward'):
+            raise ValueError(f"lane_style must be 'sideways' or 'forward', not '{lane_style}'")
+        self.sideways = self.strafe and lane_style == 'sideways'
 
         self.map = GridMap(self.get_parameter('map_resolution').value,
                            self.half_width + self.clearance)
@@ -126,16 +139,41 @@ class SquareDriver(Node):
         self.skipped = set()             # coverage cells we could not reach
         self.reachable = {}              # coverage cell -> (x, y) we can reach nearest its centre
         self.lane = 0                    # index into DIRS
+        if self.sideways:
+            # Start with a lane across our heading, and work forwards: no
+            # turn at all to begin with.
+            self.lane = 1 if self.side > 0 else 3
+            self.side = 1
         self.target = None               # coverage cell we are heading for
         self.lane_start = False          # ...to start a lane there, not end one
+        self.facing_travel = False       # turning to face the way we need to go
         self.goal = None                 # (x, y) in it we are driving to
         self.path = []                   # occupancy cells from here to goal
         self.last_plan = None
         self.best_dist = math.inf        # closest we have been to goal...
         self.best_time = None            # ...and when
         self.started = None
+        self.aim = None                  # the point being steered for right now
+        self.doing = 'waiting for /odom and /scan'   # in words, for driver_view
+        self.alert = False               # ...and whether that is a problem
+        self.last_cmd = Twist()
+        self.trail = []                  # where we believe we have been
 
         self.create_timer(0.05, self.tick)   # 20 Hz control loop
+
+        self.viewer = None
+        port = self.get_parameter('view_port').value
+        if port:
+            # A busy port must not stop the robot: it can drive without a view.
+            try:
+                self.viewer = DriverView(port)
+                self.viewer.start()
+                self.create_timer(0.2, self._update_view)
+                self.create_timer(1.0, self._update_view_map)
+                self.get_logger().info(f'live view on port {port}')
+            except OSError as err:
+                self.viewer = None
+                self.get_logger().warn(f'no live view: cannot use port {port} ({err})')
         self.get_logger().info(f'covering the room -- lanes {self.lane_width} m apart, '
                                f'{drive} drive')
 
@@ -176,26 +214,37 @@ class SquareDriver(Node):
         if self.last_scan is None or self._age(self.last_scan) > self.scan_timeout:
             self.get_logger().warn('no /scan -- stopped until the lidar is back',
                                    throttle_duration_sec=2.0)
-            self.pub.publish(Twist())     # driving blind is not allowed
+            self.doing, self.alert = 'stopped: no lidar data', True
+            self.last_cmd = Twist()
+            self.pub.publish(self.last_cmd)   # driving blind is not allowed
             return
 
         x, y, yaw = self.pose
         if self.frame is None:
             self._line_up_with_walls(x, y, yaw)
             self.started = self.get_clock().now()
+        if not self.trail or math.hypot(x - self.trail[-1][0], y - self.trail[-1][1]) > 0.03:
+            self.trail.append((round(x, 2), round(y, 2)))
+            del self.trail[:-600]
 
-        # A cell is covered once we pass within half a lane of its reachable
-        # point (its centre, unless that is too near a wall): that is what we
-        # sweep. Not just "we are in it": along a wall, the reachable points
-        # sit right on a cell's edge, and wobble would keep missing them.
+        # A cell is covered once we pass within half a lane of its centre: that
+        # is what we sweep. A cell against a wall has its centre out of reach,
+        # so there we must pass close to its reachable point instead, or the
+        # lane next door would count and the strip along the wall never swept.
         here = self._cov_cell(x, y)
-        self.covered.add(here)
         for di in (-1, 0, 1):
             for dj in (-1, 0, 1):
                 c = (here[0] + di, here[1] + dj)
-                cx, cy = self.reachable.get(c) or self._cov_centre(c)
-                if math.hypot(cx - x, cy - y) <= self.lane_width / 2:
+                cx, cy = self._cov_centre(c)
+                rx, ry = self.reachable.get(c, (cx, cy))
+                if math.hypot(rx - cx, ry - cy) < 0.05:
+                    radius = self.lane_width / 2
+                else:
+                    radius = 0.1
+                if math.hypot(rx - x, ry - y) <= radius:
                     self.covered.add(c)
+        if here not in self.reachable:
+            self.covered.add(here)
 
         # 8 cm, not 0: a goal against a wall is a hair inside _guard's stop
         # distance, and we would never quite get there. Without strafing,
@@ -214,10 +263,15 @@ class SquareDriver(Node):
             self._plan(new_target=True)
 
         cmd = Twist()
+        self.aim = None
+        self.alert = False
         near = min(self.points, key=lambda p: math.hypot(*p), default=None)
-        if near is not None and math.hypot(*near) < self.half_width + self.clearance:
+        if near is not None and math.hypot(*near) < self.half_width + 0.05:
             # Too close to something to plan from: back straight away from it
-            # first -- or, without strafing, away along our own length.
+            # first -- or, without strafing, away along our own length. Set by
+            # the chassis, not `clearance`: a wide margin would have us bounce
+            # between the two sides of a gap we can perfectly well fit through.
+            self.doing = 'too close to something: moving away'
             d = math.hypot(*near)
             if self.strafe:
                 cmd.linear.x = -0.1 * near[0] / d
@@ -234,7 +288,13 @@ class SquareDriver(Node):
                     cmd.angular.z = self.turn_speed * (1.0 if away > 0 else -1.0)
         elif self.goal is not None:
             self._drive(cmd, x, y, yaw)
+        else:
+            self.doing = 'nothing to do yet'
+        moving = cmd.linear.x != 0.0 or cmd.linear.y != 0.0
         self._guard(cmd)
+        if moving and cmd.linear.x == 0.0 and cmd.linear.y == 0.0:
+            self.doing, self.alert = 'safety stop: something in the way', True
+        self.last_cmd = cmd
         self.pub.publish(cmd)
 
     def _drive(self, cmd, x, y, yaw):
@@ -256,6 +316,8 @@ class SquareDriver(Node):
                     ax, ay = cx, cy
                     break
 
+        self.aim = (ax, ay)
+        self.doing = 'heading for a new lane' if self.lane_start else 'driving down a lane'
         a = math.hypot(ax - x, ay - y)
         if a < 0.01:
             return
@@ -285,11 +347,17 @@ class SquareDriver(Node):
             return
 
         # Mecanum: slide straight at the aim point, whichever way we face.
-        error = angle_diff(self.frame[2] + self.lane * math.pi / 2.0, yaw)
+        error = angle_diff(self._lane_heading(), yaw)
         if self.lane_start:
             # On the way to a new lane: never head where the lidar cannot see.
+            # If sideways lanes need that, turn most of the way to face it, so
+            # that afterwards facing the other way round is the nearer heading.
             travel = angle_diff(math.atan2(ay - y, ax - x), yaw)
             if abs(travel) > self.view - math.radians(5):
+                self.facing_travel = self.sideways
+            elif abs(travel) < 0.6:
+                self.facing_travel = False
+            if self.facing_travel or abs(travel) > self.view - math.radians(5):
                 self._turn_on_spot(cmd, travel)
                 return
             # Turn to face along the new lane while sliding there. An about
@@ -318,9 +386,21 @@ class SquareDriver(Node):
         cmd.linear.y = -math.sin(yaw) * wx + math.cos(yaw) * wy
         cmd.angular.z = wz
 
+    def _lane_heading(self):
+        """Which way to face on the current lane."""
+        axis = self.frame[2]
+        if not self.sideways:
+            return axis + self.lane * math.pi / 2.0
+        # Across the lanes, whichever way round is nearer: both can strafe the
+        # lane, so there is no reason to turn.
+        across = axis + (self.lane + 1) * math.pi / 2.0
+        return across if abs(angle_diff(across, self.pose[2])) <= math.pi / 2.0 \
+            else across + math.pi
+
     def _turn_on_spot(self, cmd, error):
         """Turn towards `error` radians away. Turning is progress: the stuck
         timer, which only sees distance to the goal, must not call it stuck."""
+        self.doing = 'turning on the spot'
         self.best_time = self.get_clock().now()
         direction = 1.0 if error > 0 else -1.0
         cmd.angular.z = direction * min(self.turn_speed, max(0.3, 2.0 * abs(error)))
@@ -408,6 +488,21 @@ class SquareDriver(Node):
             off = math.hypot(fx - cx, fy - cy)
             if c not in spots or off < spots[c][1]:
                 spots[c] = (f, off)
+        # A strip along a wall can be too narrow to hold any reachable floor
+        # of its own. Give such a cell the nearest we can get, just outside it.
+        edge = {}
+        for f in dist:
+            if not self.map.traversable(f):
+                continue
+            fx, fy = self.map.centre(f)
+            for dx, dy in ((0.1, 0.0), (-0.1, 0.0), (0.0, 0.1), (0.0, -0.1)):
+                c = self._cov_cell(fx + dx, fy + dy)
+                if c not in spots:
+                    cx, cy = self._cov_centre(c)
+                    off = math.hypot(fx - cx, fy - cy)
+                    if c not in edge or off < edge[c][1]:
+                        edge[c] = (f, off)
+        spots.update(edge)
         self.reachable = {c: self.map.centre(f) for c, (f, _) in spots.items()}
         todo = {c: s for c, s in spots.items()
                 if c not in self.covered and c not in self.skipped}
@@ -460,7 +555,7 @@ class SquareDriver(Node):
         #    a cell as the distance we could have driven in that time.
         self.lane_start = True
         x, y, yaw = self.pose
-        across = 1 - abs(DIRS[self.lane][0])      # 0: lanes run along i, so "across" is j
+        across = abs(DIRS[self.lane][0])          # lanes along i (0): across is j (1)
         def cost(c):
             steps = dist[spots[c][0]] * self.map.res
             side = (c[across] - here[across]) * self.side
@@ -486,6 +581,41 @@ class SquareDriver(Node):
             return math.inf
         return (self.get_clock().now() - stamp).nanoseconds / 1e9
 
+    # -------------------------------------------------------------- live view
+
+    def _update_view(self):
+        if self.pose is None:
+            return
+        x, y, yaw = self.pose
+        state = {
+            'x': x, 'y': y, 'yaw': yaw,
+            'vx': self.last_cmd.linear.x, 'vy': self.last_cmd.linear.y,
+            'wz': self.last_cmd.angular.z,
+            'doing': self.doing, 'alert': self.alert,
+            'time': 0.0 if self.started is None else self._age(self.started),
+            'view': self.view,
+            'points': [(round(px, 3), round(py, 3)) for px, py in self.points],
+            'trail': self.trail,
+            'goal': self.goal, 'aim': self.aim,
+            'path': [self.map.centre(c) for c in self.path[::2] + self.path[-1:]],
+        }
+        if self.frame is not None:
+            state['cover'] = {
+                'frame': self.frame, 'width': self.lane_width,
+                'done': sorted(self.covered),
+                'skipped': sorted(self.skipped),
+                'todo': [c for c in self.reachable
+                         if c not in self.covered and c not in self.skipped],
+            }
+        self.viewer.set_state(state)
+
+    def _update_view_map(self):
+        self.viewer.set_map(self.map.snapshot())
+
+    def stop_view(self):
+        if self.viewer is not None:
+            self.viewer.stop()
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -503,6 +633,7 @@ def main(args=None):
         # in the ESP32 firmware is what stops the robot. See CLAUDE.md.
         if rclpy.ok():
             node.pub.publish(Twist())        # always stop the robot on exit
+        node.stop_view()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
