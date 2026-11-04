@@ -47,6 +47,9 @@ class GridMap:
     def centre(self, c):
         return ((c[0] + 0.5) * self.res, (c[1] + 0.5) * self.res)
 
+    def is_occupied(self, c):
+        return self.score.get(c, 0) >= self.OCCUPIED
+
     def is_free(self, c):
         """Seen, and not an obstacle."""
         s = self.score.get(c)

@@ -94,6 +94,12 @@ your code moves between them without changes:
 | `/odom` | `nav_msgs/Odometry` | robot → you: where it thinks it is |
 
 The car has mecanum wheels, so `linear.y` really does strafe sideways.
+`square_driver` uses that by default: it slides round obstacles without turning,
+and slides across to the next lane while turning round.
+
+It ignores lidar beams more than 100° from straight ahead, because the chassis
+can block the lidar's rear and look like something touching the robot. If yours
+has a clear view all round, run it with `--ros-args -p lidar_view:=180.0`.
 
 **Testing on a prototype with ordinary wheels?** Run the driver with
 `--ros-args -p drive:=diff`: it never sends `linear.y`, and turns to face where

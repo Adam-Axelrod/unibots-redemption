@@ -21,8 +21,10 @@ and lines the lanes up with them, so it does not matter which way it is facing.
 
 How it drives depends on the `drive` parameter:
 
-    mecanum  (default) drives straight at its target in any direction, using
-             linear.y, and turns to face along each lane as it goes
+    mecanum  (default) drives every lane facing forwards and slides sideways
+             round obstacles without turning. Between lanes it slides straight
+             across to the next one, turning round as it goes, the way that
+             keeps its direction of travel where the lidar can see.
     diff     for wheels that cannot strafe: never sends linear.y. It follows
              the path by pure pursuit -- curving towards a point `lookahead`
              ahead -- and only turns on the spot when well off course. Turns
@@ -35,8 +37,10 @@ How it drives depends on the `drive` parameter:
 
 Every command also goes through _guard, which refuses to drive into anything
 closer than `stop_gap` in the raw scan, map or no map: that catches things the
-map has not caught up with, like another robot. With stopping when the lidar
-goes quiet, that is the collision avoidance the rules ask for (R10).
+map has not caught up with, like another robot. Where the lidar cannot see
+(`lidar_view`: the chassis blocks its rear) it checks the map instead. With
+stopping when the lidar goes quiet, that is the collision avoidance the rules
+ask for (R10).
 
 Run it:   ros2 run robot_control square_driver
 Watch it: http://localhost:8080
@@ -70,12 +74,13 @@ class SquareDriver(Node):
         self.declare_parameter('drive', 'mecanum')     # or 'diff', if it cannot strafe
         self.declare_parameter('speed', 0.25)          # m/s
         self.declare_parameter('turn_speed', 0.8)      # rad/s
-        self.declare_parameter('lookahead', 0.4)       # m; diff drive steers for a point this far on
+        self.declare_parameter('lookahead', 0.4)       # m; diff drive aims this far ahead
         self.declare_parameter('lane_width', 0.4)      # m between lanes
         self.declare_parameter('sweep_side', 'left')   # which way to work across the room first
         self.declare_parameter('half_width', 0.10)     # half the 200 mm chassis
         self.declare_parameter('clearance', 0.05)      # m spare round the chassis
         self.declare_parameter('stop_gap', 0.06)       # never drive closer than this
+        self.declare_parameter('lidar_view', 100.0)    # deg either side of ahead it can see
         self.declare_parameter('map_resolution', 0.05) # m per occupancy cell
         self.declare_parameter('map_range', 4.0)       # m of each beam added to the map
         self.declare_parameter('replan_period', 1.0)   # s between re-plans
@@ -89,6 +94,7 @@ class SquareDriver(Node):
         self.half_width = self.get_parameter('half_width').value
         self.clearance = self.get_parameter('clearance').value
         self.stop_gap = self.get_parameter('stop_gap').value
+        self.view = math.radians(self.get_parameter('lidar_view').value)
         self.map_range = self.get_parameter('map_range').value
         self.replan_period = self.get_parameter('replan_period').value
         self.stuck_time = self.get_parameter('stuck_time').value
@@ -145,6 +151,9 @@ class SquareDriver(Node):
         points, beams = [], []
         for i, r in enumerate(msg.ranges):
             angle = msg.angle_min + i * msg.angle_increment    # 0 == straight ahead
+            if abs(angle_diff(angle, 0.0)) > self.view:
+                continue                  # the chassis, not the world: it would
+                                          # look like something touching the robot
             if math.isfinite(r) and msg.range_min <= r < msg.range_max:
                 points.append((r * math.cos(angle), r * math.sin(angle)))
                 beams.append((angle, r, True))
@@ -275,13 +284,46 @@ class SquareDriver(Node):
             cmd.angular.z = v * curvature
             return
 
-        # Mecanum: world-frame velocity towards it, then into the robot's
-        # frame -- it can drive any direction -- while turning along the lane.
+        # Mecanum: slide straight at the aim point, whichever way we face.
+        error = angle_diff(self.frame[2] + self.lane * math.pi / 2.0, yaw)
+        if self.lane_start:
+            # On the way to a new lane: never head where the lidar cannot see.
+            travel = angle_diff(math.atan2(ay - y, ax - x), yaw)
+            if abs(travel) > self.view - math.radians(5):
+                self._turn_on_spot(cmd, travel)
+                return
+            # Turn to face along the new lane while sliding there. An about
+            # turn could go either way: turn towards the way we are sliding,
+            # and the slide swings from one side, through dead ahead, to the
+            # other, always in view. Lane by lane that alternates left and
+            # right turns, so what odometry misjudges one way it gets back
+            # the other. Pace the slide to finish with the turn.
+            if abs(error) > 2.8:
+                wz = self.turn_speed if travel > 0 else -self.turn_speed
+            else:
+                wz = clamp(2.0 * error, self.turn_speed)
+            if abs(error) > 0.05:
+                v = max(0.05, min(v, d * abs(wz) / abs(error)))
+        else:
+            # On a lane: face along it, then hold that heading, so going
+            # round an obstacle is a sideways slide, not a turn.
+            if abs(error) > 0.2:
+                self._turn_on_spot(cmd, error)
+                return
+            wz = clamp(2.0 * error, self.turn_speed)
+
+        # World-frame velocity, into the robot's frame.
         wx, wy = v * (ax - x) / a, v * (ay - y) / a
         cmd.linear.x = math.cos(yaw) * wx + math.sin(yaw) * wy
         cmd.linear.y = -math.sin(yaw) * wx + math.cos(yaw) * wy
-        heading = self.frame[2] + self.lane * math.pi / 2.0
-        cmd.angular.z = clamp(2.0 * angle_diff(heading, yaw), self.turn_speed)
+        cmd.angular.z = wz
+
+    def _turn_on_spot(self, cmd, error):
+        """Turn towards `error` radians away. Turning is progress: the stuck
+        timer, which only sees distance to the goal, must not call it stuck."""
+        self.best_time = self.get_clock().now()
+        direction = 1.0 if error > 0 else -1.0
+        cmd.angular.z = direction * min(self.turn_speed, max(0.3, 2.0 * abs(error)))
 
     def _path_point_ahead(self, x, y, cells):
         """The path cell `cells` steps beyond the one nearest us."""
@@ -307,6 +349,23 @@ class SquareDriver(Node):
             if 0.0 < along < self.half_width + self.stop_gap and abs(py * dx - px * dy) < half:
                 cmd.linear.x = cmd.linear.y = 0.0
                 return
+
+        # Any of that strip the lidar cannot see, go by what the map remembers.
+        # (Only there: the scan is newer wherever it can see.) From the
+        # chassis' centre onwards: sliding sideways, a corner can be alongside
+        # its back half.
+        x, y, yaw = self.pose
+        cos_yaw, sin_yaw = math.cos(yaw), math.sin(yaw)
+        step = self.map.res * 0.8
+        for i in range(int((self.half_width + self.stop_gap) / step) + 1):
+            for j in range(-int(half / step), int(half / step) + 1):
+                px = i * step * dx - j * step * dy      # in the robot's frame
+                py = i * step * dy + j * step * dx
+                if abs(math.atan2(py, px)) > self.view and self.map.is_occupied(
+                        self.map.cell(x + cos_yaw * px - sin_yaw * py,
+                                      y + sin_yaw * px + cos_yaw * py)):
+                    cmd.linear.x = cmd.linear.y = 0.0
+                    return
 
     # --------------------------------------------------------------- planning
 
