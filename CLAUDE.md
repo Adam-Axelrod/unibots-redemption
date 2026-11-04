@@ -209,7 +209,10 @@ The full rules are in [the rulebook](docs/unibots-rulebook-2026-27-v1.0.pdf).
 Previous versions of this project vendored the whole Yahboom stack. It was ~48 MB
 and almost none of it was used. Left out on purpose:
 
-- **SLAM (gmapping/cartographer) and Nav2** — the sweep does not need a map.
+- **Nav2, and SLAM by default** — the sweep builds its own simple map. SLAM is
+  an optional experiment: `slam_toolbox` as a dependency, started with
+  `ros2 launch robot_bringup slam.launch.py` and used by `square_driver` with
+  `-p use_slam:=true`.
 - **`robot_localization` EKF + IMU filter** — `odom_tf` does the job in 40 lines
   of Python. The trade-off is real: this is raw wheel odometry, and mecanum
   wheels slip, so heading drifts over long runs. If that starts to hurt,

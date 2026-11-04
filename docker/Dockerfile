@@ -7,6 +7,7 @@ FROM ros:humble-ros-base
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3-colcon-common-extensions \
         ros-humble-tf2-ros \
+        ros-humble-slam-toolbox \
     && rm -rf /var/lib/apt/lists/*
 
 # Every shell in this container gets ROS already sourced -- including the ones

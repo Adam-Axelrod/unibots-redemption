@@ -139,8 +139,10 @@ goes quiet for half a second. Publish continuously on a timer, not once.
 See [docs/hardware/](docs/hardware/README.md) for the hardware and first-time Pi
 setup, and [CLAUDE.md](CLAUDE.md) for how it all fits together.
 
-To watch `square_driver` on the real robot, open **http://raspberrypi:8081** in a
-browser on a laptop on the Tailscale network. If that name doesn't work, run
+To watch `square_driver` on the real robot, open
+**http://raspberrypi.tail6c0787.ts.net:8081** in a normal browser on a laptop on
+the Tailscale network. Use the full name: the short `raspberrypi` only works on
+Adam's own tailnet, not for laptops the Pi is shared with. If it won't load, run
 `ssh -L 8081:localhost:8081 rpi5` and open http://localhost:8081 instead.
 
 What to look for:
@@ -153,3 +155,26 @@ What to look for:
 
 The page only reads, so it can't drive the robot. For a match, turn it off with
 `--ros-args -p view_port:=0`, since the rules ban remote control (R8).
+
+### Comparing random movement and SLAM
+
+`square_driver` can run four ways, to compare on the same floor:
+
+| | Position from odometry | Position from SLAM |
+|---|---|---|
+| **Planned lanes** | `square_driver` | add `-p use_slam:=true` |
+| **Random walk** | add `-p motion:=random` | add both |
+
+For SLAM, rebuild the image once with `docker compose --profile robot up --build
+robot`, which adds `slam_toolbox`. Then start it in its own terminal before the
+driver:
+
+```bash
+docker compose exec robot bash
+ros2 launch robot_bringup slam.launch.py
+```
+
+The live view then adds SLAM's map in purple, the odometry-only trail as a dotted
+line, and how far SLAM has corrected odometry. A correction that keeps growing
+means odometry is drifting. On the page, compare **cells visited** after a set
+time, and how long it takes to log `room covered`.

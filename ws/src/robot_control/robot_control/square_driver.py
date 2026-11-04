@@ -38,6 +38,14 @@ How it drives depends on the `drive` parameter:
 
     ros2 run robot_control square_driver --ros-args -p drive:=diff
 
+Two things to try, for comparison:
+
+    motion:=random   wander instead of planning: pick a random clear direction,
+                     drive for a few seconds or until something is close, repeat
+    use_slam:=true   take our position from slam_toolbox instead of trusting
+                     wheel odometry. Start it first:
+                     ros2 launch robot_bringup slam.launch.py
+
 Every command also goes through _guard, which refuses to drive into anything
 closer than `stop_gap` in the raw scan, map or no map: that catches things the
 map has not caught up with, like another robot. Where the lidar cannot see
@@ -52,11 +60,14 @@ Watch it: http://localhost:8080   the simulator: where the robot really is
                                   Pi's name instead of localhost.
 """
 import math
+import random
 
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import ExternalShutdownException
+from rclpy.duration import Duration
 from rclpy.qos import qos_profile_sensor_data
+from rclpy.time import Time
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
@@ -80,6 +91,9 @@ class SquareDriver(Node):
 
         self.declare_parameter('drive', 'mecanum')     # or 'diff', if it cannot strafe
         self.declare_parameter('lane_style', 'sideways')  # mecanum: or 'forward'
+        self.declare_parameter('motion', 'coverage')   # or 'random', to wander
+        self.declare_parameter('random_seed', 0)       # 0: different every run
+        self.declare_parameter('use_slam', False)      # position from slam_toolbox
         self.declare_parameter('speed', 0.25)          # m/s
         self.declare_parameter('turn_speed', 0.8)      # rad/s
         self.declare_parameter('lookahead', 0.4)       # m; diff drive aims this far ahead
@@ -117,6 +131,11 @@ class SquareDriver(Node):
         if lane_style not in ('sideways', 'forward'):
             raise ValueError(f"lane_style must be 'sideways' or 'forward', not '{lane_style}'")
         self.sideways = self.strafe and lane_style == 'sideways'
+        motion = self.get_parameter('motion').value
+        if motion not in ('coverage', 'random'):
+            raise ValueError(f"motion must be 'coverage' or 'random', not '{motion}'")
+        self.wandering = motion == 'random'
+        self.rng = random.Random(self.get_parameter('random_seed').value or None)
 
         self.map = GridMap(self.get_parameter('map_resolution').value,
                            self.half_width + self.clearance)
@@ -130,6 +149,10 @@ class SquareDriver(Node):
         self.create_subscription(LaserScan, 'scan', self.on_scan, qos_profile_sensor_data)
 
         self.pose = None                 # (x, y, yaw), filled in by on_odom
+        self.odom_pose = None            # the same, by wheel odometry alone
+        self.correction = None           # slam_toolbox's map -> odom: (x, y, yaw)
+        self.redrawn = None              # when a SLAM jump last made us redraw the map
+        self.odom_trail = []             # where wheel odometry alone says we went
         self.points = []                 # lidar returns as (x, y), robot frame
         self.last_scan = None            # when they arrived
         self.last_map_update = None
@@ -158,8 +181,15 @@ class SquareDriver(Node):
         self.alert = False               # ...and whether that is a problem
         self.last_cmd = Twist()
         self.trail = []                  # where we believe we have been
+        self.leg_direction = None        # random walk: world heading of this leg
+        self.leg_until = None            # ...and when it ends
+        self.leg_turn = 0.0              # ...turning on the spot first, this way
 
         self.create_timer(0.05, self.tick)   # 20 Hz control loop
+
+        self.use_slam = self.get_parameter('use_slam').value
+        if self.use_slam:
+            self._start_slam()
 
         self.viewer = None
         port = self.get_parameter('view_port').value
@@ -174,14 +204,29 @@ class SquareDriver(Node):
             except OSError as err:
                 self.viewer = None
                 self.get_logger().warn(f'no live view: cannot use port {port} ({err})')
-        self.get_logger().info(f'covering the room -- lanes {self.lane_width} m apart, '
-                               f'{drive} drive')
+        what = 'wandering at random' if self.wandering else \
+            f'covering the room -- lanes {self.lane_width} m apart'
+        self.get_logger().info(f'{what}, {drive} drive, position from '
+                               + ('slam_toolbox' if self.use_slam else 'wheel odometry'))
 
     # ------------------------------------------------------------------ input
 
     def on_odom(self, msg: Odometry):
         p = msg.pose.pose
-        self.pose = (p.position.x, p.position.y, yaw_from_quaternion(p.orientation))
+        self.odom_pose = (p.position.x, p.position.y, yaw_from_quaternion(p.orientation))
+        if not self.use_slam:
+            self.pose = self.odom_pose
+            return
+        # slam_toolbox says how far odometry has drifted: map -> odom. Apply the
+        # latest to the latest odometry. If SLAM stops, this keeps the last
+        # correction and we carry on, on odometry, rather than freeze.
+        self._update_correction()
+        if self.correction is not None:
+            cx, cy, cyaw = self.correction
+            ox, oy, oyaw = self.odom_pose
+            self.pose = (cx + math.cos(cyaw) * ox - math.sin(cyaw) * oy,
+                         cy + math.sin(cyaw) * ox + math.cos(cyaw) * oy,
+                         angle_diff(cyaw + oyaw, 0.0))
 
     def on_scan(self, msg: LaserScan):
         """Keep the scan as (x, y) points around the robot (x ahead, y left),
@@ -210,7 +255,17 @@ class SquareDriver(Node):
 
     def tick(self):
         if self.pose is None:
-            return                        # no odometry yet, stay put
+            # No position yet, stay put. Say so: nothing moves until it arrives.
+            if self.odom_pose is None:
+                self.get_logger().warn('no /odom -- waiting. On the robot it comes from the '
+                                       'micro-ROS agent and odom_tf: are both running?',
+                                       throttle_duration_sec=2.0)
+                self.doing, self.alert = 'waiting: no odometry on /odom', True
+            else:
+                self.get_logger().warn('no map -> odom from slam_toolbox -- waiting. Is '
+                                       'slam.launch.py running?', throttle_duration_sec=2.0)
+                self.doing, self.alert = 'waiting: no position from SLAM yet', True
+            return
         if self.last_scan is None or self._age(self.last_scan) > self.scan_timeout:
             self.get_logger().warn('no /scan -- stopped until the lidar is back',
                                    throttle_duration_sec=2.0)
@@ -226,6 +281,9 @@ class SquareDriver(Node):
         if not self.trail or math.hypot(x - self.trail[-1][0], y - self.trail[-1][1]) > 0.03:
             self.trail.append((round(x, 2), round(y, 2)))
             del self.trail[:-600]
+            if self.use_slam:
+                self.odom_trail.append((round(self.odom_pose[0], 2), round(self.odom_pose[1], 2)))
+                del self.odom_trail[:-600]
 
         # A cell is covered once we pass within half a lane of its centre: that
         # is what we sweep. A cell against a wall has its centre out of reach,
@@ -253,7 +311,11 @@ class SquareDriver(Node):
         reach = 0.15 if self.lane_start and not self.strafe else 0.08
         arrived = self.goal is not None and \
             math.hypot(self.goal[0] - x, self.goal[1] - y) < reach
-        if self.target is None or arrived:
+        if self.wandering:
+            if self._age(self.last_plan) > self.replan_period:
+                self._find_spots(self.map.bfs(self.map.cell(x, y))[0])  # for the view's count
+                self.last_plan = self.get_clock().now()
+        elif self.target is None or arrived:
             self._plan(new_target=True)
         elif self._age(self.last_plan) > self.replan_period:
             self._plan(new_target=False)  # same cell, fresh path: the map may have changed
@@ -286,6 +348,8 @@ class SquareDriver(Node):
                     cmd.linear.x = -0.1
                 else:
                     cmd.angular.z = self.turn_speed * (1.0 if away > 0 else -1.0)
+        elif self.wandering:
+            self._wander(cmd, x, y, yaw)
         elif self.goal is not None:
             self._drive(cmd, x, y, yaw)
         else:
@@ -386,6 +450,75 @@ class SquareDriver(Node):
         cmd.linear.y = -math.sin(yaw) * wx + math.cos(yaw) * wy
         cmd.angular.z = wz
 
+    def _wander(self, cmd, x, y, yaw):
+        """A random walk, deliberately ignoring the map: drive a random clear
+        direction for a few seconds or until something is close, then choose
+        again. A baseline to compare the planner with."""
+        now = self.get_clock().now()
+        limit = self.view - math.radians(5)
+        margin = self.half_width + self.stop_gap + 0.1
+
+        if self.leg_turn != 0.0:
+            if now.nanoseconds < self.leg_until.nanoseconds:
+                self.doing = 'wandering: turning'
+                cmd.angular.z = self.leg_turn * self.turn_speed
+                return
+            self.leg_turn = 0.0
+            self.leg_direction = None
+
+        travel = None
+        if self.leg_direction is not None:
+            travel = angle_diff(self.leg_direction, yaw)
+            if not self.strafe and abs(travel) > 0.2:
+                self.doing = 'wandering: turning'      # diff drive must face it first
+                self.leg_until = now + Duration(seconds=1.0)
+                cmd.angular.z = clamp(2.0 * travel, self.turn_speed)
+                return
+            if now.nanoseconds >= self.leg_until.nanoseconds or abs(travel) > limit \
+                    or self._free_distance(travel) < margin:
+                travel = None
+        if travel is None:
+            travel = self._new_leg(now, yaw, limit, margin)
+            if travel is None or not self.strafe:
+                return                                 # turning first
+
+        self.doing = 'wandering'
+        self.aim = (x + 0.4 * math.cos(self.leg_direction), y + 0.4 * math.sin(self.leg_direction))
+        if self.strafe:
+            cmd.linear.x = self.speed * math.cos(travel)
+            cmd.linear.y = self.speed * math.sin(travel)
+        else:
+            cmd.linear.x = self.speed
+            cmd.angular.z = clamp(2.0 * travel, self.turn_speed)
+
+    def _new_leg(self, now, yaw, limit, margin):
+        """Choose the next leg: its direction relative to us, or None if we are
+        to turn on the spot first. Sometimes turn anyway, or a mecanum robot
+        would only ever face one way."""
+        if self.rng.random() > 0.25:
+            for _ in range(30):
+                angle = self.rng.uniform(-limit, limit)
+                if self._free_distance(angle) > margin + 0.2:
+                    self.leg_direction = angle_diff(yaw + angle, 0.0)
+                    self.leg_until = now + Duration(seconds=self.rng.uniform(1.0, 5.0))
+                    return angle
+        self.leg_direction = None
+        self.leg_turn = self.rng.choice((-1.0, 1.0))
+        self.leg_until = now + Duration(seconds=self.rng.uniform(0.5, 2.5))
+        return None
+
+    def _free_distance(self, angle):
+        """How far the chassis could go at `angle` from straight ahead before
+        reaching anything the lidar sees, from its centre. inf if clear."""
+        dx, dy = math.cos(angle), math.sin(angle)
+        half = self.half_width + 0.02
+        best = math.inf
+        for px, py in self.points:
+            along = px * dx + py * dy
+            if 0.0 < along < best and abs(py * dx - px * dy) < half:
+                best = along
+        return best
+
     def _lane_heading(self):
         """Which way to face on the current lane."""
         axis = self.frame[2]
@@ -475,9 +608,37 @@ class SquareDriver(Node):
         x, y, _ = self.pose
         here = self._cov_cell(x, y)
         dist, parent = self.map.bfs(self.map.cell(x, y))
+        spots = self._find_spots(dist)
+        todo = {c: s for c, s in spots.items()
+                if c not in self.covered and c not in self.skipped}
 
-        # For every coverage cell we can reach, the reachable spot in it
-        # nearest its centre. `todo` is the ones still to visit.
+        if not todo:
+            self.goal = self.target = None
+            # Just after redrawing the map nothing looks reachable. That is not
+            # the room being covered: wait for the lidar to fill it in.
+            if len(self.covered) > 1 and self._age(self.redrawn) > 3.0:
+                t = self._age(self.started)
+                self.get_logger().info(f'room covered in {t:.0f} s -- starting again')
+                self.covered = {here}
+                self.skipped.clear()
+            self.last_plan = self.get_clock().now()
+            return
+
+        if not new_target and self.target in spots:
+            target = self.target          # may be covered on the way: still the lane's end
+        else:
+            target = self._choose(here, todo, dist)
+
+        f = spots[target][0]
+        self.path = GridMap.path_to(parent, f)
+        if target != self.target:
+            self.best_dist, self.best_time = math.inf, self.get_clock().now()
+        self.target, self.goal = target, self.map.centre(f)
+        self.last_plan = self.get_clock().now()
+
+    def _find_spots(self, dist):
+        """For every coverage cell we can reach, the reachable spot in it
+        nearest its centre, as {cell: (occupancy cell, distance off centre)}."""
         spots = {}
         for f in dist:
             if not self.map.traversable(f):
@@ -504,30 +665,7 @@ class SquareDriver(Node):
                         edge[c] = (f, off)
         spots.update(edge)
         self.reachable = {c: self.map.centre(f) for c, (f, _) in spots.items()}
-        todo = {c: s for c, s in spots.items()
-                if c not in self.covered and c not in self.skipped}
-
-        if not todo:
-            self.goal = self.target = None
-            if len(self.covered) > 1:
-                t = self._age(self.started)
-                self.get_logger().info(f'room covered in {t:.0f} s -- starting again')
-                self.covered = {here}
-                self.skipped.clear()
-            self.last_plan = self.get_clock().now()
-            return
-
-        if not new_target and self.target in spots:
-            target = self.target          # may be covered on the way: still the lane's end
-        else:
-            target = self._choose(here, todo, dist)
-
-        f = spots[target][0]
-        self.path = GridMap.path_to(parent, f)
-        if target != self.target:
-            self.best_dist, self.best_time = math.inf, self.get_clock().now()
-        self.target, self.goal = target, self.map.centre(f)
-        self.last_plan = self.get_clock().now()
+        return spots
 
     def _choose(self, here, spots, dist):
         """Pick the next coverage cell to drive to, and the lane direction.
@@ -581,10 +719,66 @@ class SquareDriver(Node):
             return math.inf
         return (self.get_clock().now() - stamp).nanoseconds / 1e9
 
+    # ------------------------------------------------------------------- SLAM
+
+    def _start_slam(self):
+        """Imported here so that without SLAM, nothing about it is needed."""
+        from nav_msgs.msg import OccupancyGrid
+        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+        from tf2_ros.buffer import Buffer
+        from tf2_ros.transform_listener import TransformListener
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        # slam_toolbox publishes /map once in a while and keeps the latest for
+        # late joiners, so this must ask for that or it may hear nothing.
+        latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                             durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.create_subscription(OccupancyGrid, 'map', self.on_slam_map, latched)
+
+    def _update_correction(self):
+        from tf2_ros import TransformException
+        try:
+            t = self.tf_buffer.lookup_transform('map', 'odom', Time()).transform
+        except TransformException:
+            return
+        new = (t.translation.x, t.translation.y, yaw_from_quaternion(t.rotation))
+        old = self.correction
+        if old is not None and math.hypot(new[0] - old[0], new[1] - old[1]) > 0.2:
+            # SLAM just moved us a long way, say on closing a loop. Our own map
+            # was drawn from the old position and is now wrong: start it again.
+            # The lidar redraws what is around us within a second.
+            self.get_logger().info('SLAM moved us by %.2f m: redrawing the map'
+                                   % math.hypot(new[0] - old[0], new[1] - old[1]))
+            self.map = GridMap(self.map.res, self.half_width + self.clearance)
+            self.target = self.goal = None
+            self.redrawn = self.get_clock().now()
+        self.correction = new
+
+    def on_slam_map(self, msg):
+        if self.viewer is None:
+            return
+        width = msg.info.width
+        occupied, free = [], []
+        for n, value in enumerate(msg.data):
+            j, i = n // width, n % width
+            if value >= 65:
+                occupied.append((i, j))
+            elif value >= 0:
+                if free and free[-1][0] == j and free[-1][1] + free[-1][2] == i:
+                    free[-1][2] += 1
+                else:
+                    free.append([j, i, 1])
+        self.viewer.set_slam_map({
+            'res': msg.info.resolution,
+            'ox': msg.info.origin.position.x, 'oy': msg.info.origin.position.y,
+            'occupied': occupied, 'free': free,
+        })
+
     # -------------------------------------------------------------- live view
 
     def _update_view(self):
         if self.pose is None:
+            self.viewer.set_state({'waiting': True, 'doing': self.doing, 'alert': self.alert})
             return
         x, y, yaw = self.pose
         state = {
@@ -599,6 +793,8 @@ class SquareDriver(Node):
             'goal': self.goal, 'aim': self.aim,
             'path': [self.map.centre(c) for c in self.path[::2] + self.path[-1:]],
         }
+        if self.use_slam:
+            state['slam'] = {'correction': self.correction, 'odom_trail': self.odom_trail}
         if self.frame is not None:
             state['cover'] = {
                 'frame': self.frame, 'width': self.lane_width,

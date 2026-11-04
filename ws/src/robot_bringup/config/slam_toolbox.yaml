@@ -1,0 +1,49 @@
+# slam_toolbox's online_async settings, tuned for a 2.5 m arena and a robot this
+# small. Everything not listed uses slam_toolbox's default.
+slam_toolbox:
+  ros__parameters:
+    # Plugin settings: slam_toolbox's standard solver.
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+
+    # Frames and topics, matching robot.launch.py and sim.launch.py.
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_footprint
+    scan_topic: /scan_slam
+    mode: mapping
+
+    # The driver reads map -> odom from this, so it must keep coming.
+    transform_publish_period: 0.02
+    transform_timeout: 0.2
+    tf_buffer_duration: 30.0
+    map_update_interval: 2.0
+    resolution: 0.05
+    stack_size_to_use: 40000000
+
+    # The board's lidar reads 0.12-8 m. 0.2 keeps out returns off the chassis.
+    min_laser_range: 0.2
+    max_laser_range: 8.0
+
+    # Take a new scan often: the arena is small, and the robot never goes far.
+    # slam_toolbox's defaults, 0.5 m and 0.5 rad, suit a whole building.
+    throttle_scans: 1
+    minimum_time_interval: 0.2
+    minimum_travel_distance: 0.1
+    minimum_travel_heading: 0.15
+    use_scan_matching: true
+    use_scan_barycenter: true
+    scan_buffer_size: 10
+    scan_buffer_maximum_scan_distance: 4.0
+
+    # Closing loops: search near, since the arena is small.
+    do_loop_closing: true
+    loop_search_maximum_distance: 2.0
+    loop_match_minimum_chain_size: 10
+    loop_match_maximum_variance_coarse: 3.0
+    loop_match_minimum_response_coarse: 0.35
+    loop_match_minimum_response_fine: 0.45

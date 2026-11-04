@@ -8,8 +8,9 @@ robot, from any laptop that can reach the Pi.
 It only ever reads: there are no driving controls, because rule R8 bans remote
 control during a match. Standard library only, like robot_sim's viz_server.
 
-The page gets two kinds of Server-Sent Event: `state`, several times a second,
-and `map`, which is bigger and changes slowly, about once a second.
+The page gets Server-Sent Events: `state`, several times a second; `map`, which
+is bigger and changes slowly, about once a second; and `slam`, slam_toolbox's own
+map, if it is running. Each goes out only when it has changed.
 """
 import json
 import os
@@ -25,25 +26,27 @@ class DriverView:
     def __init__(self, port):
         self.port = port
         self._lock = threading.Lock()
-        self._state = None
-        self._map = None
-        self._map_version = 0
+        self._latest = {}                 # event name -> (version, JSON)
         self._httpd = None
 
-    def set_state(self, state):
-        blob = json.dumps(state, separators=(',', ':'))
+    def _set(self, event, value):
+        blob = json.dumps(value, separators=(',', ':'))
         with self._lock:
-            self._state = blob
+            version = self._latest.get(event, (0, None))[0] + 1
+            self._latest[event] = (version, blob)
+
+    def set_state(self, state):
+        self._set('state', state)
 
     def set_map(self, grid):
-        blob = json.dumps(grid, separators=(',', ':'))
-        with self._lock:
-            self._map = blob
-            self._map_version += 1
+        self._set('map', grid)
+
+    def set_slam_map(self, grid):
+        self._set('slam', grid)
 
     def _read(self):
         with self._lock:
-            return self._state, self._map, self._map_version
+            return dict(self._latest)
 
     def start(self):
         self._httpd = ThreadingHTTPServer(('0.0.0.0', self.port), _make_handler(self))
@@ -86,15 +89,13 @@ def _make_handler(view):
             self.send_header('Cache-Control', 'no-cache')
             self.send_header('Connection', 'keep-alive')
             self.end_headers()
-            sent_map = -1
+            sent = {}
             try:
                 while True:
-                    state, grid, version = view._read()
-                    if grid is not None and version != sent_map:
-                        self.wfile.write(f'event: map\ndata: {grid}\n\n'.encode())
-                        sent_map = version
-                    if state is not None:
-                        self.wfile.write(f'event: state\ndata: {state}\n\n'.encode())
+                    for event, (version, blob) in view._read().items():
+                        if sent.get(event) != version:
+                            self.wfile.write(f'event: {event}\ndata: {blob}\n\n'.encode())
+                            sent[event] = version
                     self.wfile.flush()
                     time.sleep(0.1)
             except (BrokenPipeError, ConnectionResetError, OSError):
