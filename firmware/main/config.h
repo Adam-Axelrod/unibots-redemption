@@ -14,7 +14,7 @@
 #define PWM_FREQ_HZ          25000
 #define PWM_RESOLUTION_HZ    10000000
 #define PWM_MAX              (PWM_RESOLUTION_HZ / PWM_FREQ_HZ)   // 400 ticks = 100%
-#define PWM_LIMIT            240      // Deliberately capped at 60% for first runs
+#define PWM_LIMIT            340      // 85%. Raised from 60% because strafing stalled on the floor
 #define PWM_DEAD_ZONE        100      // Motors need 3-5 V before they start to turn
 #define PID_KP               6.0f
 #define PID_KI               1.0f
