@@ -44,6 +44,9 @@ checked at inspection:
 
 ## Charging and care
 
+- **Turn the main power switch off before charging, and don't use the robot while
+  it charges.** Yahboom warns the charger or battery could explode. Shut the Pi down
+  first ([pi-setup.md](pi-setup.md#switching-off)).
 - Charge through the **DC 8.4 V port on the control board**; the battery
   doesn't need to come out.
 - The charger's light is **red while charging, green when full**. Unplug it
@@ -56,10 +59,10 @@ checked at inspection:
 
 ## Monitoring from software
 
-The control board measures battery voltage itself (see
-[esp32-board.md](esp32-board.md#battery-sensing)). Whether it publishes it as
-a ROS topic is not confirmed yet; check during
-[Pi setup](pi-setup.md#7-record-what-the-board-publishes).
+The control board measures the voltage and publishes it on `/battery` once a
+second, as **volts x 10** (`std_msgs/UInt16`): `75` means 7.5 V. Check with
+`ros2 topic echo /battery --once`. Above about 80 is nearly full; below about
+65, charge it. The board also sounds its buzzer when the battery is low.
 
 ## To measure
 
