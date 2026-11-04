@@ -26,7 +26,8 @@ firmware, different IMU, similar marketing copy.
 
 The ESP32 does all the real-time work:
 
-- mecanum inverse kinematics: `/cmd_vel` in, four wheel speeds out
+- skid-steer kinematics: `/cmd_vel` in, four wheel speeds out. **It ignores
+  `linear.y`, so it cannot strafe**; see [Firmware](#firmware)
 - per-wheel PID, using the encoders (decoded in hardware by the ESP32's PCNT units)
 - integrating wheel odometry, published as `/odom_raw`
 - reading the lidar and IMU and publishing them (see [lidar.md](lidar.md))
@@ -51,11 +52,12 @@ Motors are driven with 25 kHz PWM. Yahboom recommends 7.4 V for the motors.
 They need about 3-5 V before they start turning, and the firmware skips that
 dead zone for you.
 
-Checked on 2026-10-21 with Yahboom's motor cables: all four wheels turn the
-right way going forwards, strafing and turning. Check again after moving the
-motors to our chassis ([pi-setup.md step 8](pi-setup.md#8-first-drive)).
+Checked with Yahboom's motor cables: all four wheels turn the right way going
+forwards and turning. Strafe commands do not turn the wheels at all (checked on
+2026-11-04 with the wheels lifted). Check again after moving the motors to our
+chassis ([pi-setup.md step 8](pi-setup.md#8-first-drive)).
 
-The firmware's kinematics assume **this wheel order and mecanum wheels**. If a
+The firmware's kinematics assume **this wheel order**. If a
 wheel spins the wrong way on our chassis, swap that motor's two power wires
 (M+ and M-) rather than changing code.
 
@@ -110,6 +112,12 @@ pin voltage x 4.03. Published on `/battery` once a second, as volts x 10. See
 Ships as a prebuilt `.bin`. Ours is **version 2.1.0** (`config_robot.py`
 prints it). We have **no source to modify** and almost never
 reflash it. What we change is its stored configuration.
+
+**It cannot strafe.** It was written for a skid-steer car: `linear.y` does nothing,
+and `/odom_raw` always reports `vy` as 0. Yahboom's
+[*Robot kinematics analysis*](https://github.com/YahboomTechnology/MicroROS-Car-Pi5/blob/main/16.%20ESP32%20basic%20course/16.Robot%20kinematics%20analysis.pdf)
+lesson says "V_y is invalid", and no setting changes it. Our own firmware, to fix
+this, is in progress on the `feat/custom-firmware` branch.
 
 The firmware runs **micro-ROS**, a cut-down ROS client compiled into it. It is
 not ROS 2: there is no `ros2` command on the board.

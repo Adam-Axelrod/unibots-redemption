@@ -44,6 +44,9 @@ checked at inspection:
 
 ## Charging and care
 
+- **Turn the main power switch off before charging, and don't use the robot while
+  it charges.** Yahboom warns the charger or battery could explode. Shut the Pi down
+  first ([pi-setup.md](pi-setup.md#switching-off)).
 - Charge through the **DC 8.4 V port on the control board**; the battery
   doesn't need to come out.
 - The charger's light is **red while charging, green when full**. Unplug it

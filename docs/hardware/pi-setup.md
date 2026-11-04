@@ -173,10 +173,11 @@ ros2 topic pub -r 10 /cmd_vel geometry_msgs/Twist "{linear: {x: 0.1}}"
 ```
 
 All four wheels should turn forwards. If one turns backwards, swap that
-motor's two power wires. Then try `linear: {y: 0.1}` (strafe left) and
-`angular: {z: 0.5}` (turn left).
+motor's two power wires. Then try `angular: {z: 0.5}` (turn left). Don't expect
+`linear: {y: 0.1}` to do anything: Yahboom's firmware
+[cannot strafe](esp32-board.md#firmware).
 
-Once all three look right, put it on the floor and run a pattern:
+Once both look right, put it on the floor and run a pattern:
 
 ```bash
 ros2 run robot_control square_driver
@@ -224,5 +225,5 @@ takes seconds, not minutes.
 | `config_robot.py` hangs or reads garbage | the agent is still running; stop it first |
 | `/odom` works, `/scan` doesn't | lidar cable to the board's radar port |
 | A wheel turns the wrong way | swap that motor's M+ and M- wires |
-| Strafe makes it spin | mecanum wheels in the wrong pattern; see [chassis.md](chassis.md#wheels) |
+| Strafe commands do nothing | expected: Yahboom's firmware [cannot strafe](esp32-board.md#firmware) |
 | Pi shows a low-voltage warning or reboots | battery flat, or the Pi is not powered from the board's 5 A output |

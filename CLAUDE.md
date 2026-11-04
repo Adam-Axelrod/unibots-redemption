@@ -33,6 +33,10 @@ motor. That is the whole design:
 /odom     (Odometry)   robot -> you      pose + velocity, frame odom -> base_footprint
 ```
 
+⚠️ **`linear.y` only works in the simulator for now.** Yahboom's firmware ignores
+it, so code that strafes passes in the simulator and sits still on the real robot.
+Our own firmware, to fix this, is in progress on `feat/custom-firmware`.
+
 When adding a feature, add it against these topics. If you find yourself
 branching on "am I in simulation", something has gone wrong.
 
@@ -60,7 +64,7 @@ The board is Yahboom's **MicroROS Control Board**, built on an
 **ESP32-S3-WROOM-1U-N4R2**. Not the STM32F103 board Yahboom also sells for the
 Pi 5 — different firmware, different IMU, near-identical marketing copy.
 
-It does all the real-time work: mecanum inverse kinematics, per-wheel PID using
+It does all the real-time work: skid-steer kinematics, per-wheel PID using
 the encoders (decoded in hardware by the ESP32's PCNT units), and integrating
 wheel odometry. **The Raspberry Pi is never in the motor control loop.**
 
