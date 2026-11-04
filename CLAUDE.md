@@ -181,7 +181,10 @@ The full rules are in [the rulebook](docs/unibots-rulebook-2026-27-v1.0.pdf).
 ## Conventions
 
 - **Python only.** No C++ packages. Keep it that way unless there is a
-  performance reason.
+  performance reason. The one exception is [`firmware/`](firmware/README.md), our
+  own C firmware for the board, because Yahboom's ignores `linear.y` and so cannot
+  strafe. It has not run on the board yet, so the sections above still describe
+  Yahboom's firmware.
 - **Register new nodes in `setup.py`** under `console_scripts`, or `ros2 run`
   will not find them. This catches everyone once.
 - **Parameters, not constants.** Use `declare_parameter`, override with
