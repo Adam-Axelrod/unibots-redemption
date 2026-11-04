@@ -22,6 +22,7 @@ setup(
             'square_driver = robot_control.square_driver:main',
             'sweep_planner = robot_control.sweep_planner:main',
             'room_mapper = robot_control.room_mapper:main',
+            'strafe_test = robot_control.strafe_test:main',
         ],
     },
 )

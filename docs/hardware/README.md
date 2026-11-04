@@ -51,8 +51,7 @@ the Pi: the ESP32 reads the lidar and IMU and publishes `/scan` and the IMU
 topic itself, alongside `/odom_raw`.
 
 The **Pi is never in the motor control loop**. The ESP32 runs wheel PID,
-skid-steer kinematics (it cannot strafe yet, see
-[esp32-board.md](esp32-board.md#firmware)) and odometry; the Pi only sends velocity commands and reads
+mecanum kinematics ([our own firmware](../../firmware/README.md)) and odometry; the Pi only sends velocity commands and reads
 back odometry, IMU and lidar.
 
 ## Still unknown

@@ -91,9 +91,8 @@ your code moves between them without changes:
 | `/scan` | `sensor_msgs/LaserScan` | robot → you: lidar distances |
 | `/odom` | `nav_msgs/Odometry` | robot → you: where it thinks it is |
 
-In the simulator, `linear.y` strafes sideways. **The real robot cannot strafe yet**:
-it has mecanum wheels, but Yahboom's firmware ignores `linear.y`. See
-[esp32-board.md](docs/hardware/esp32-board.md#firmware).
+`linear.y` strafes sideways, in the simulator and on the real robot. The robot needs
+[our own firmware](firmware/README.md) for this, because Yahboom's ignores `linear.y`.
 
 ## If something breaks
 

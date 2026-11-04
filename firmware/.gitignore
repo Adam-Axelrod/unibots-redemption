@@ -1,0 +1,11 @@
+build/
+components/
+managed_components/
+sdkconfig
+sdkconfig.old
+dependencies.lock
+test/run_tests
+# Flash backups can contain WiFi details. Never commit them.
+backup/
+*.bin
+test/run_tests.dSYM/
