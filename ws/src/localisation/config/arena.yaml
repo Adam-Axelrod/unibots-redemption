@@ -1,8 +1,13 @@
+
 # ws/src/localisation/config/arena.yaml
 
-# The map is centred on the arena, with +x pointing inwards from our starting wall and +y pointing left.
+# The map is centred on the arena, with the forward axis pointing inwards from our starting wall.
 frame:
   frame_id: map
+  # Forward axis x or y
+  forward_axis: y
+  # Forward sign +1 or -1
+  forward_sign: +1
 
 walls:
   inner_side_length_m: 2.500
