@@ -107,7 +107,7 @@
       <label><input type="checkbox" id="s-map" checked>
         <span class="swatch" style="background:var(--wall)"></span>map: walls</label>
       <label><input type="checkbox" id="s-cov" checked>
-        <span class="swatch" style="background:var(--done)"></span>visited cells</label>
+        <span class="swatch" style="background:var(--done)"></span>visited cells; edges outlined; current zone dashed</label>
       <label><input type="checkbox" id="s-plan" checked>
         <span class="swatch" style="background:var(--plan)"></span>plan</label>
       <label><input type="checkbox" id="s-trail" checked>
@@ -195,6 +195,19 @@ function draw() {
     cell(state.cover.todo, css('--todo'));
     cell(state.cover.done, css('--done'));
     cell(state.cover.skipped, css('--skip'));
+
+    // A robot vacuum's edges and its current zone, in the same grid.
+    const outline = (i0, j0, i1, j1, colour, dash) => {
+      ctx.save();
+      ctx.translate(tx(ox), ty(oy)); ctx.rotate(-a);
+      ctx.strokeStyle = colour; ctx.lineWidth = 2; ctx.setLineDash(dash);
+      ctx.strokeRect((i0 - 0.5) * w * scale, -(j1 + 0.5) * w * scale,
+                     (i1 - i0 + 1) * w * scale, (j1 - j0 + 1) * w * scale);
+      ctx.restore();
+    };
+    for (const [i, j] of state.cover.edges || []) outline(i, j, i, j, 'rgba(77,212,192,0.35)', []);
+    const z = state.cover.zone;
+    if (z) outline(z[0] * z[2], z[1] * z[2], z[0] * z[2] + z[2] - 1, z[1] * z[2] + z[2] - 1, css('--plan'), [10, 6]);
   }
 
   if (grid && on('s-map')) {

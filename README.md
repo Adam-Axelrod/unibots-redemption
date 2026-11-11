@@ -100,11 +100,16 @@ your code moves between them without changes:
 | `/odom` | `nav_msgs/Odometry` | robot → you: where it thinks it is |
 
 The car has mecanum wheels, so `linear.y` really does strafe sideways.
-`square_driver` uses that by default: it faces across its lanes and strafes down
-them, left then right, stepping forward between them, so it hardly needs to turn.
-If something has to face the way it is going, like a front-mounted collector, use
-`--ros-args -p lane_style:=forward`: it faces along each lane, and slides across
-to the next one while turning round.
+
+By default `square_driver` cleans like a mapping robot vacuum: it traces the
+room's edge along the walls first, then fills the rest zone by zone (squares
+`zone_size` lanes across, 1.2 m by default), finishing each before the next. It
+faces forward along its lanes, as a vacuum does, and strafes only round obstacles
+and between lanes.
+
+To compare, `--ros-args -p motion:=lanes` lanes the whole room at once instead,
+and by default faces across its lanes and strafes down them, so it hardly turns.
+`lane_style` (`forward` or `sideways`) overrides which way either faces.
 
 It ignores lidar beams more than 100° from straight ahead, because the chassis
 can block the lidar's rear and look like something touching the robot. If yours
@@ -156,13 +161,14 @@ What to look for:
 The page only reads, so it can't drive the robot. For a match, turn it off with
 `--ros-args -p view_port:=0`, since the rules ban remote control (R8).
 
-### Comparing random movement and SLAM
+### Comparing movement patterns and SLAM
 
-`square_driver` can run four ways, to compare on the same floor:
+`square_driver` can run these ways, to compare on the same floor:
 
 | | Position from odometry | Position from SLAM |
 |---|---|---|
-| **Planned lanes** | `square_driver` | add `-p use_slam:=true` |
+| **Robot vacuum** (default) | `square_driver` | add `-p use_slam:=true` |
+| **Lanes** | add `-p motion:=lanes` | add both |
 | **Random walk** | add `-p motion:=random` | add both |
 
 For SLAM, rebuild the image once with `docker compose --profile robot up --build

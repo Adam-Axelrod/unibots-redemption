@@ -8,13 +8,21 @@ Two maps are built as the robot drives:
     a coverage grid     (lane_width cells, lined up with the walls)
         which parts of the floor the robot has already driven over
 
-and the plan is simple:
+and it cleans like a mapping robot vacuum (motion:=vacuum, the default):
+
+    1. the edges: trace the outside of the room, along the walls, first
+    2. then zone by zone: split the rest into squares `zone_size` cells across,
+       and fill one with lanes before moving to the nearest unfinished one
+
+Within either, lanes work the same way:
 
     carry on down the current lane while the next cell is open and unvisited
     otherwise go to the nearest unvisited cell -- round obstacles, by the
     shortest path on the map -- and start a new lane there, pointing the way
     with the longest unvisited run
     when nothing reachable is left, start again
+
+motion:=lanes skips the edges and the zones, and lanes the whole room at once.
 
 At the start the robot works out which way the walls run (coverage_map.wall_angle)
 and lines the lanes up with them, so it does not matter which way it is facing.
@@ -85,14 +93,27 @@ def clamp(value, limit):
     return max(-limit, min(limit, value))
 
 
+def _run(cells, start, d):
+    """How many of `cells` in a row from `start` in direction DIRS[d]. One with
+    something in it is fine: the path goes round."""
+    n, c = 0, start
+    while True:
+        c = (c[0] + DIRS[d][0], c[1] + DIRS[d][1])
+        if c not in cells:
+            return n
+        n += 1
+
+
 class SquareDriver(Node):
 
     def __init__(self):
         super().__init__('square_driver')
 
         self.declare_parameter('drive', 'mecanum')     # or 'diff', if it cannot strafe
-        self.declare_parameter('lane_style', 'sideways')  # mecanum: or 'forward'
-        self.declare_parameter('motion', 'coverage')   # or 'random', to wander
+        self.declare_parameter('lane_style', 'auto')   # mecanum: 'sideways', 'forward', or
+                                                       # 'auto': forward for vacuum, else sideways
+        self.declare_parameter('motion', 'vacuum')     # or 'lanes', or 'random' to wander
+        self.declare_parameter('zone_size', 3)         # vacuum: zone width in lane_width cells
         self.declare_parameter('random_seed', 0)       # 0: different every run
         self.declare_parameter('use_slam', False)      # position from slam_toolbox
         self.declare_parameter('speed', 0.25)          # m/s
@@ -128,14 +149,22 @@ class SquareDriver(Node):
         if drive not in ('mecanum', 'diff'):
             raise ValueError(f"drive must be 'mecanum' or 'diff', not '{drive}'")
         self.strafe = drive == 'mecanum'
-        lane_style = self.get_parameter('lane_style').value
-        if lane_style not in ('sideways', 'forward'):
-            raise ValueError(f"lane_style must be 'sideways' or 'forward', not '{lane_style}'")
-        self.sideways = self.strafe and lane_style == 'sideways'
         motion = self.get_parameter('motion').value
-        if motion not in ('coverage', 'random'):
-            raise ValueError(f"motion must be 'coverage' or 'random', not '{motion}'")
+        if motion not in ('vacuum', 'lanes', 'random'):
+            raise ValueError(f"motion must be 'vacuum', 'lanes' or 'random', not '{motion}'")
         self.wandering = motion == 'random'
+        self.vacuum = motion == 'vacuum'
+        lane_style = self.get_parameter('lane_style').value
+        if lane_style == 'auto':
+            # A vacuum drives forwards. In tests, strafing down lanes let wheel
+            # slip drift us into boxes beside our blind back; facing forward
+            # it never did, and covered as much.
+            lane_style = 'forward' if self.vacuum else 'sideways'
+        if lane_style not in ('sideways', 'forward'):
+            raise ValueError("lane_style must be 'auto', 'sideways' or 'forward', "
+                             f"not '{lane_style}'")
+        self.sideways = self.strafe and lane_style == 'sideways'
+        self.zone_size = max(1, self.get_parameter('zone_size').value)
         self.rng = random.Random(self.get_parameter('random_seed').value or None)
 
         self.map = GridMap(self.get_parameter('map_resolution').value,
@@ -172,6 +201,12 @@ class SquareDriver(Node):
             self.side = 1
         self.target = None               # coverage cell we are heading for
         self.lane_start = False          # ...to start a lane there, not end one
+        self.phase = 'edges'             # vacuum: 'edges', then 'zones'
+        self.zone = None                 # vacuum: the zone being filled, (zi, zj)
+        self.edges = set()               # vacuum: coverage cells along the outside
+        self.tour = None                 # vacuum: which way round the edges, +1 or -1
+        self.lap = 0.0                   # vacuum: how far round the edges we have been, rad
+        self.lap_angle = None            # ...measured from here, round the room's middle
         self.facing_travel = False       # turning to face the way we need to go
         self.goal = None                 # (x, y) in it we are driving to
         self.path = []                   # occupancy cells from here to goal
@@ -211,7 +246,9 @@ class SquareDriver(Node):
                 self.viewer = None
                 self.get_logger().warn(f'no live view: cannot use port {port} ({err})')
         what = 'wandering at random' if self.wandering else \
-            f'covering the room -- lanes {self.lane_width} m apart'
+            ('cleaning like a robot vacuum: edges first, then zone by zone'
+             if self.vacuum else 'covering the room in lanes') + \
+            f' -- lanes {self.lane_width} m apart'
         self.get_logger().info(f'{what}, {drive} drive, position from '
                                + ('slam_toolbox' if self.use_slam else 'wheel odometry'))
 
@@ -406,6 +443,9 @@ class SquareDriver(Node):
 
         self.aim = (ax, ay)
         self.doing = 'heading for a new lane' if self.lane_start else 'driving down a lane'
+        if self.vacuum:
+            self.doing = ('edges: ' if self.phase == 'edges' else
+                          f'zone {self.zone[0]},{self.zone[1]}: ') + self.doing
         a = math.hypot(ax - x, ay - y)
         if a < 0.01:
             return
@@ -436,11 +476,18 @@ class SquareDriver(Node):
 
         # Mecanum: slide straight at the aim point, whichever way we face.
         error = angle_diff(self._lane_heading(), yaw)
-        if self.lane_start:
-            # On the way to a new lane: never head where the lidar cannot see.
-            # If sideways lanes need that, turn most of the way to face it, so
-            # that afterwards facing the other way round is the nearer heading.
-            travel = angle_diff(math.atan2(ay - y, ax - x), yaw)
+        travel = angle_diff(math.atan2(ay - y, ax - x), yaw)
+        limit = self.view - math.radians(5)
+        # Turn to the lane's heading only if, facing that way, we could still
+        # see where we are going. Otherwise the two rules -- face the way we
+        # go, face along the lane -- undo each other and we turn for ever.
+        if abs(angle_diff(travel, error)) > limit:
+            error = 0.0
+        if self.lane_start or abs(travel) > limit:
+            # On the way to a new lane, or on a lane whose path bends round
+            # behind us: never head where the lidar cannot see. If sideways
+            # lanes need that, turn most of the way to face it, so that
+            # afterwards facing the other way round is the nearer heading.
             if abs(travel) > self.view - math.radians(5):
                 self.facing_travel = self.sideways
             elif abs(travel) < 0.6:
@@ -646,11 +693,15 @@ class SquareDriver(Node):
                 self.get_logger().info(f'room covered in {t:.0f} s -- starting again')
                 self.covered = {here}
                 self.skipped.clear()
+                self.phase, self.zone, self.tour = 'edges', None, None
+                self.lap, self.lap_angle = 0.0, None
             self.last_plan = self.get_clock().now()
             return
 
         if not new_target and self.target in spots:
             target = self.target          # may be covered on the way: still the lane's end
+        elif self.vacuum:
+            target = self._vacuum_choose(here, spots, todo, dist)
         else:
             target = self._choose(here, todo, dist)
 
@@ -692,18 +743,83 @@ class SquareDriver(Node):
         self.reachable = {c: self.map.centre(f) for c, (f, _) in spots.items()}
         return spots
 
+    def _vacuum_choose(self, here, spots, todo, dist):
+        """The next cell for a robot vacuum: round the edges while any are
+        left, then lanes, zone by zone."""
+        self.edges = self._outer_edge(spots)
+        edges = {c: s for c, s in todo.items() if c in self.edges}
+        # The edges are done after one lap: once we have gone all the way
+        # round the middle of the room. Not when every edge cell is visited:
+        # as odometry drifts the map smears, the outline creeps outwards, and
+        # we would chase it for ever. Edge cells left are swept by the zones.
+        if self.phase == 'edges' and edges and abs(self.lap) < 2 * math.pi:
+            return self._trace_edge(here, edges, spots)
+        if self.phase == 'edges':
+            self.get_logger().info('edges done in %.0f s; now zone by zone' % self._age(self.started))
+            self.phase, self.zone = 'zones', None
+
+        def zone(c):
+            return (c[0] // self.zone_size, c[1] // self.zone_size)
+        if self.zone is None or not any(zone(c) == self.zone for c in todo):
+            # On to the zone with the nearest unvisited cell.
+            self.zone = zone(min(todo, key=lambda c: dist[todo[c][0]]))
+            self.get_logger().info(f'filling zone {self.zone[0]},{self.zone[1]}')
+        return self._choose(here, {c: s for c, s in todo.items() if zone(c) == self.zone}, dist)
+
+    @staticmethod
+    def _outer_edge(spots):
+        """The room's outline: the outermost reachable cell at each end of
+        every row and every column. A box in the middle leaves a gap inside a
+        row, not at its end, so like a vacuum this traces the walls; a box
+        against a wall is part of the outline, and gets traced round."""
+        rows, cols = {}, {}
+        for i, j in spots:
+            rows.setdefault(j, []).append(i)
+            cols.setdefault(i, []).append(j)
+        edge = set()
+        for j, cells in rows.items():
+            edge.update({(min(cells), j), (max(cells), j)})
+        for i, cells in cols.items():
+            edge.update({(i, min(cells)), (i, max(cells))})
+        return edge
+
+    def _trace_edge(self, here, edges, spots):
+        """Go round the outline in one direction, a whole straight stretch at
+        a time: the next unvisited edge cell further round, and on from it in
+        a straight line for as long as the outline goes that way."""
+        # Angles round the middle of the room put the outline in order.
+        mi = sum(c[0] for c in spots) / len(spots)
+        mj = sum(c[1] for c in spots) / len(spots)
+        def angle(c):
+            return math.atan2(c[1] - mj, c[0] - mi)
+        start = angle(here)
+        if self.lap_angle is not None:
+            self.lap += angle_diff(start, self.lap_angle)     # how far round so far
+        self.lap_angle = start
+        def ahead(c, way):
+            return (way * (angle(c) - start)) % (2 * math.pi)
+        if self.tour is None:
+            # Set off whichever way round the next edge cell is nearer.
+            self.tour = min((1, -1), key=lambda way: ahead(min(edges, key=lambda c: ahead(c, way)), way))
+        nxt = min(edges, key=lambda c: ahead(c, self.tour))
+
+        # Carry on past it in the same straight line, to the end of the stretch.
+        di, dj = nxt[0] - here[0], nxt[1] - here[1]
+        if (di == 0) != (dj == 0):                 # in line with us
+            d = DIRS.index((di // abs(di) if di else 0, dj // abs(dj) if dj else 0))
+            n = _run(edges, nxt, d)
+            self.lane = d
+            self.lane_start = abs(di + dj) > 1     # not the very next cell: travel first
+            return (nxt[0] + n * DIRS[d][0], nxt[1] + n * DIRS[d][1])
+        self.lane_start = True
+        self.lane = max(range(4), key=lambda d: _run(edges, nxt, d))
+        return nxt
+
     def _choose(self, here, spots, dist):
         """Pick the next coverage cell to drive to, and the lane direction.
         `spots` holds only cells still to visit."""
         def run(start, d):
-            """How many reachable, unvisited cells in a row from `start` in
-            direction d. Something in one of them is fine: the path goes round."""
-            n, c = 0, start
-            while True:
-                c = (c[0] + DIRS[d][0], c[1] + DIRS[d][1])
-                if c not in spots:
-                    return n
-                n += 1
+            return _run(spots, start, d)
 
         # 1. A lane: drive straight down it to the last unvisited cell.
         n = run(here, self.lane)
@@ -822,6 +938,8 @@ class SquareDriver(Node):
                 'frame': self.frame, 'width': self.lane_width,
                 'done': sorted(self.covered),
                 'skipped': sorted(self.skipped),
+                'edges': sorted(self.edges) if self.vacuum else [],
+                'zone': [*self.zone, self.zone_size] if self.vacuum and self.zone else None,
                 'todo': [c for c in self.reachable
                          if c not in self.covered and c not in self.skipped],
             }
