@@ -29,7 +29,7 @@ motor. That is the whole design:
 
 ```
 /cmd_vel  (Twist)      you  -> robot     linear.x forward, linear.y strafe, angular.z turn
-/scan     (LaserScan)  robot -> you      360 deg, angle 0 is straight ahead
+/scan     (LaserScan)  robot -> you      360 deg, in the lidar's frame (see below)
 /odom     (Odometry)   robot -> you      pose + velocity, frame odom -> base_footprint
 ```
 
@@ -152,8 +152,13 @@ ros2 topic echo /odom --once     # ESP32 + micro-ROS agent + odom_tf
 ### The lidar: Oradar MS200
 
 Plugs into the control board's radar port; the ESP32 publishes `/scan` (360
-points at 1°, angle_min -180°, so **index 0 is behind the robot**: always use
-`angle_min + i * angle_increment`). Nothing on the Pi reads the lidar.
+points at 1°, angle_min -180°: always use `angle_min + i * angle_increment`).
+Nothing on the Pi reads the lidar.
+
+⚠️ **The lidar's 0° is not straight ahead on our robot: it is mounted at -90°**
+(its 0° points out of the right side). That is the yaw of `base_link_to_laser`
+in `robot.launch.py`, and the only place it is set. Every node that reads
+`/scan` adds it via `robot_control.lidar_mount`; do the same in new nodes.
 
 The repo also has a Pi-side MS200 driver (`oradar_lidar`, vendored in
 `docker/vendor/`), for the lidar plugged into the Pi over USB instead. It is

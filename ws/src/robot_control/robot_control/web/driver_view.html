@@ -10,7 +10,7 @@
     --ink: #e6edf3; --dim: #8b98a5;
     --robot: #4dd4c0; --hit: #f5a35c; --wall: #dfe6ec; --plan: #e0c341;
     --done: #24513f; --todo: #1e2c3d; --skip: #5a2b2b; --stop: #e5534b;
-    --slam: #c678dd;
+    --slam: #c678dd; --measured: #ff7eb6;
   }
   * { box-sizing: border-box; }
   body {
@@ -68,9 +68,25 @@
     </div>
     <div class="card">
       <h2>What it's commanding</h2>
+      <div class="row"><span>moving</span><span id="cmd-dir">–</span></div>
       <div class="row"><span>forward</span><span id="vx">–</span></div>
-      <div class="row"><span>strafe</span><span id="vy">–</span></div>
-      <div class="row"><span>turn</span><span id="wz">–</span></div>
+      <div class="row"><span>strafe left</span><span id="vy">–</span></div>
+      <div class="row"><span>turn left</span><span id="wz">–</span></div>
+    </div>
+    <div class="card">
+      <h2>What the wheels say</h2>
+      <div class="row"><span>moving</span><span id="m-dir">–</span></div>
+      <div class="row"><span>forward</span><span id="m-vx">–</span></div>
+      <div class="row"><span>strafe left</span><span id="m-vy">–</span></div>
+      <div class="row"><span>turn left</span><span id="m-wz">–</span></div>
+      <p class="hint">From the board's odometry: how the wheels are actually turning. Directions are the robot's own: "forward" is where its front points.</p>
+    </div>
+    <div class="card">
+      <h2>Arrows on the robot</h2>
+      <label><span class="swatch" style="background:var(--robot)"></span>F: its front, where it thinks it faces</label>
+      <label><span class="swatch" style="background:var(--plan)"></span>where it's told to move</label>
+      <label><span class="swatch" style="background:var(--measured)"></span>where the wheels say it's moving</label>
+      <p class="hint">If the robot really moves a different way from the yellow arrow, the wheels or motor wiring are wrong. If it moves the way the pink arrow says, but that differs from yellow, the motors aren't doing what they're told.</p>
     </div>
     <div class="card">
       <h2>Progress</h2>
@@ -96,6 +112,8 @@
         <span class="swatch" style="background:var(--plan)"></span>plan</label>
       <label><input type="checkbox" id="s-trail" checked>
         <span class="swatch" style="background:#3b6ea8"></span>trail</label>
+      <label><input type="checkbox" id="s-up" checked>
+        <span class="swatch"></span>turn so its start heading is up</label>
       <div id="slam-show" hidden>
         <label><input type="checkbox" id="s-slam" checked>
           <span class="swatch" style="background:var(--slam)"></span>SLAM's map</label>
@@ -127,7 +145,8 @@ function fit() {
   }
   if (state) add(state.x, state.y);
   if (!isFinite(x0)) return;
-  const size = Math.max(x1 - x0, y1 - y0, 1.5) + 0.5;
+  const r = turn();
+  const size = (Math.max(x1 - x0, y1 - y0, 1.5) + 0.5) * (Math.abs(Math.cos(r)) + Math.abs(Math.sin(r)));
   scale = canvas.width / size;
   offX = canvas.width / 2 - (x0 + x1) / 2 * scale;
   offY = canvas.height / 2 + (y0 + y1) / 2 * scale;
@@ -135,10 +154,20 @@ function fit() {
 const tx = x => x * scale + offX;
 const ty = y => -y * scale + offY;
 
+// How far to turn the picture so the robot's starting heading points up.
+function turn() {
+  if (!state || typeof state.start_yaw !== 'number' || !on('s-up')) return 0;
+  return -(Math.PI / 2 - state.start_yaw);
+}
+
 // ---- drawing ---------------------------------------------------------------
 function draw() {
   fit();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.rotate(turn());
+  ctx.translate(-canvas.width / 2, -canvas.height / 2);
 
   if (grid) {
     // Open floor it has seen, dim, so unknown areas stand out as background.
@@ -233,25 +262,54 @@ function drawScan(s) {
   }
 }
 
+// An arrow from (x0, y0) to (x1, y1) in metres, with its head drawn in pixels.
+function arrow(x0, y0, x1, y1, colour, width) {
+  const ax = tx(x0), ay = ty(y0), bx = tx(x1), by = ty(y1);
+  const a = Math.atan2(by - ay, bx - ax), head = 7 + 2 * width;
+  ctx.strokeStyle = ctx.fillStyle = colour; ctx.lineWidth = width;
+  ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(bx, by);
+  ctx.lineTo(bx - head * Math.cos(a - 0.45), by - head * Math.sin(a - 0.45));
+  ctx.lineTo(bx - head * Math.cos(a + 0.45), by - head * Math.sin(a + 0.45));
+  ctx.closePath(); ctx.fill();
+}
+
 function drawRobot(s) {
   const h = 0.10 * scale;                     // the 200 mm chassis, to scale
   ctx.save();
   ctx.translate(tx(s.x), ty(s.y));
   ctx.rotate(-s.yaw);
-  ctx.strokeStyle = ctx.fillStyle = css(s.alert ? '--stop' : '--robot');
+  ctx.strokeStyle = css(s.alert ? '--stop' : '--robot');
   ctx.lineWidth = 2; ctx.strokeRect(-h, -h, 2 * h, 2 * h);
-  ctx.beginPath(); ctx.moveTo(h, 0); ctx.lineTo(0, 0.6 * h); ctx.lineTo(0, -0.6 * h); ctx.closePath(); ctx.fill();
   ctx.restore();
 
-  // Which way it is being told to move.
-  const v = Math.hypot(s.vx, s.vy);
-  if (v > 0.01) {
-    const c = Math.cos(s.yaw), n = Math.sin(s.yaw), k = 1.2;   // seconds ahead
-    ctx.strokeStyle = css('--robot'); ctx.lineWidth = 3; ctx.beginPath();
-    ctx.moveTo(tx(s.x), ty(s.y));
-    ctx.lineTo(tx(s.x + (c * s.vx - n * s.vy) * k), ty(s.y + (n * s.vx + c * s.vy) * k));
-    ctx.stroke();
+  const c = Math.cos(s.yaw), n = Math.sin(s.yaw);
+  const world = (vx, vy, k) => [s.x + (c * vx - n * vy) * k, s.y + (n * vx + c * vy) * k];
+
+  // Its front: where it thinks it faces.
+  const [fx, fy] = world(0.28, 0, 1);
+  arrow(s.x, s.y, fx, fy, css(s.alert ? '--stop' : '--robot'), 4);
+  const [lx, ly] = world(0.36, 0, 1);
+  ctx.fillStyle = css('--robot'); ctx.font = 'bold 16px ui-monospace, monospace';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.save(); ctx.translate(tx(lx), ty(ly)); ctx.rotate(-turn()); ctx.fillText('F', 0, 0); ctx.restore();
+
+  // Where it is told to move, and where the wheels say it is moving: 1.2 s ahead.
+  if (Math.hypot(s.vx, s.vy) > 0.01) arrow(s.x, s.y, ...world(s.vx, s.vy, 1.2), css('--plan'), 3);
+  const [mx, my] = s.measured || [0, 0];
+  if (Math.hypot(mx, my) > 0.01) arrow(s.x, s.y, ...world(mx, my, 1.2), css('--measured'), 2);
+}
+
+// Which way (vx, vy) is, in the robot's own terms.
+function direction(vx, vy, wz) {
+  let words = 'still';
+  if (Math.hypot(vx, vy) >= 0.02) {
+    const names = ['forward', 'forward-left', 'left', 'back-left',
+                   'back', 'back-right', 'right', 'forward-right'];
+    words = names[((Math.round(Math.atan2(vy, vx) / (Math.PI / 4)) % 8) + 8) % 8];
   }
+  if (Math.abs(wz) >= 0.05) words += wz > 0 ? ', turning left' : ', turning right';
+  return words;
 }
 
 // ---- live data -------------------------------------------------------------
@@ -281,6 +339,10 @@ src.addEventListener('state', e => {
   text('pt', fmt(state.yaw * 180 / Math.PI, 0) + '°');
   text('vx', fmt(state.vx) + ' m/s'); text('vy', fmt(state.vy) + ' m/s');
   text('wz', fmt(state.wz) + ' rad/s');
+  text('cmd-dir', direction(state.vx, state.vy, state.wz));
+  const [mx, my, mw] = state.measured || [0, 0, 0];
+  text('m-vx', fmt(mx) + ' m/s'); text('m-vy', fmt(my) + ' m/s'); text('m-wz', fmt(mw) + ' rad/s');
+  text('m-dir', direction(mx, my, mw));
   text('time', fmt(state.time, 0) + ' s');
   if (state.cover) text('cells', state.cover.done.length + ' of ' + (state.cover.done.length + state.cover.todo.length));
   text('npts', state.points.length);
