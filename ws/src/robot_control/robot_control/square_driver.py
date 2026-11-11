@@ -151,6 +151,8 @@ class SquareDriver(Node):
 
         self.pose = None                 # (x, y, yaw), filled in by on_odom
         self.odom_pose = None            # the same, by wheel odometry alone
+        self.odom_twist = (0.0, 0.0, 0.0)  # how the wheels say we are moving: vx, vy, wz
+        self.start_heading = None        # which way we faced at the start
         self.correction = None           # slam_toolbox's map -> odom: (x, y, yaw)
         self.redrawn = None              # when a SLAM jump last made us redraw the map
         self.odom_trail = []             # where wheel odometry alone says we went
@@ -218,6 +220,8 @@ class SquareDriver(Node):
     def on_odom(self, msg: Odometry):
         p = msg.pose.pose
         self.odom_pose = (p.position.x, p.position.y, yaw_from_quaternion(p.orientation))
+        t = msg.twist.twist
+        self.odom_twist = (t.linear.x, t.linear.y, t.angular.z)
         if not self.use_slam:
             self.pose = self.odom_pose
             return
@@ -603,6 +607,7 @@ class SquareDriver(Node):
     # --------------------------------------------------------------- planning
 
     def _line_up_with_walls(self, x, y, yaw):
+        self.start_heading = yaw
         angle, sure = wall_angle(self.points)
         axis = yaw + angle if sure > 0.3 else yaw
         # Of the four wall directions, call the one nearest our heading "lane 0".
@@ -801,6 +806,7 @@ class SquareDriver(Node):
             'x': x, 'y': y, 'yaw': yaw,
             'vx': self.last_cmd.linear.x, 'vy': self.last_cmd.linear.y,
             'wz': self.last_cmd.angular.z,
+            'measured': self.odom_twist, 'start_yaw': self.start_heading,
             'doing': self.doing, 'alert': self.alert,
             'time': 0.0 if self.started is None else self._age(self.started),
             'view': self.view,
