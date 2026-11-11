@@ -12,6 +12,8 @@ from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
+from robot_bringup.lidar_tf import lidar_transform
+
 
 def generate_launch_description():
     world = LaunchConfiguration('world')
@@ -41,16 +43,12 @@ def generate_launch_description():
 
         # The sim publishes odom -> base_footprint itself. These two fill in the
         # rest of the tree so /scan can be transformed like it is on the robot.
+        # The lidar mounting is shared with the real robot via sensors.yaml.
         Node(
             package='tf2_ros', executable='static_transform_publisher',
             name='base_footprint_to_base_link',
             arguments=['0', '0', '0.05', '0', '0', '0',
                        'base_footprint', 'base_link'],
         ),
-        Node(
-            package='tf2_ros', executable='static_transform_publisher',
-            name='base_link_to_laser',
-            arguments=['-0.0046412', '0', '0.094079', '0', '0', '0',
-                       'base_link', 'laser_frame'],
-        ),
+        lidar_transform(),
     ])

@@ -71,12 +71,14 @@ class ArenaFrame:
     # Walls are fixed at +/- half the configured inner side length.
     def wall_segments(self) -> dict[str, Segment]:
         h = self.side_length_m / 2.0
+
         arena_walls = {
             "home": ((-h, -h), (-h, h)),
             "left": ((-h, h), (h, h)),
             "opposite": ((h, h), (h, -h)),
             "right": ((h, -h), (-h, -h)),
         }
+
         return {
             name: (self.arena_to_map(*a), self.arena_to_map(*b))
             for name, (a, b) in arena_walls.items()
@@ -86,18 +88,33 @@ class ArenaFrame:
     def nominal_start_pose(self, robot_length_m: float) -> Pose:
         if not 0 < robot_length_m < self.side_length_m:
             raise ValueError("robot_length_m must fit inside the arena")
+
         forward = -self.side_length_m / 2.0 + robot_length_m / 2.0
         return self.pose_to_map(forward, 0.0, 0.0)
 
     def start_lateral_bounds(self, robot_width_m: float) -> tuple[float, float]:
         if not 0 < robot_width_m <= self.guide_separation_m:
             raise ValueError("robot_width_m must fit between the scoring guides")
+
         limit = (self.guide_separation_m - robot_width_m) / 2.0
         return -limit, limit
 
 
-def load_arena_frame(path: str | Path = CONFIG_PATH) -> ArenaFrame:
-    with Path(path).open(encoding="utf-8") as stream:
+# Use the installed ROS configuration when available.
+def get_arena_config_path() -> Path:
+    try:
+        from ament_index_python.packages import get_package_share_directory
+
+        package_share = get_package_share_directory("localisation")
+        return Path(package_share) / "config" / "arena.yaml"
+    except (ImportError, LookupError):
+        return CONFIG_PATH
+
+
+def load_arena_frame(path: str | Path | None = None) -> ArenaFrame:
+    config_path = Path(path) if path is not None else get_arena_config_path()
+
+    with config_path.open(encoding="utf-8") as stream:
         config = yaml.safe_load(stream)
 
     frame = config["frame"]
@@ -115,6 +132,7 @@ def load_arena_frame(path: str | Path = CONFIG_PATH) -> ArenaFrame:
 
 if __name__ == "__main__":
     arena = load_arena_frame()
+
     print("Forward yaw (rad):", arena.forward_yaw_rad)
     print("Nominal start pose:", arena.nominal_start_pose(0.200))
     print("Lateral start bounds:", arena.start_lateral_bounds(0.200))

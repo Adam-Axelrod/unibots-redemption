@@ -21,6 +21,8 @@ from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
+from robot_bringup.lidar_tf import lidar_transform
+
 
 def generate_launch_description():
     lidar = LaunchConfiguration('lidar')
@@ -91,14 +93,10 @@ def generate_launch_description():
         ),
         # The lidar's own 0 deg points out of the robot's right side, although
         # its arrow points forward (checked 2026-11-11): so it is turned -90 deg
-        # (clockwise, seen from above). square_driver, scan_for_slam and
-        # slam_toolbox all read this, so it is the one place to change it.
-        Node(
-            package='tf2_ros', executable='static_transform_publisher',
-            name='base_link_to_laser',
-            arguments=['-0.0046412', '0', '0.094079', '-1.5707963', '0', '0',
-                       'base_link', 'laser_frame'],
-        ),
+        # (clockwise, seen from above). Its mounting is set once, in
+        # localisation/config/sensors.yaml, and the simulator reads the same
+        # file. square_driver, scan_for_slam and slam_toolbox all read this TF.
+        lidar_transform(),
         Node(
             package='tf2_ros', executable='static_transform_publisher',
             name='base_link_to_imu',

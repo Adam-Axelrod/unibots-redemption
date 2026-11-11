@@ -9,8 +9,9 @@ against the simulator runs unchanged on the real car:
     publishes   /odom      nav_msgs/Odometry       (where the robot thinks it is)
     broadcasts  odom -> base_footprint TF
 
-There is no physics engine. The robot is a point that integrates the velocity
-you command, and the lidar is a raycast against line segments. That is enough
+There is no physics engine. The robot is a square footprint that integrates the
+velocity you command, and the lidar is a raycast against line segments from its
+configured mounting (localisation/config/sensors.yaml). That is enough
 to test driving patterns, and it runs anywhere Python runs.
 
 Run it:   ros2 launch robot_bringup sim.launch.py
@@ -27,7 +28,10 @@ from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 from tf2_ros import TransformBroadcaster
 
+from localisation.sensors import lidar_mount, load_sensor_config
 from robot_sim import world as world_lib
+from robot_sim.collision import motion_collides
+from robot_sim.lidar import lidar_world_pose, simulate_ranges
 from robot_sim.viz_server import VizServer
 
 
@@ -46,7 +50,6 @@ class SimNode(Node):
         self.declare_parameter('rate', 20.0)           # Hz, physics + scan
         self.declare_parameter('scan_beams', 180)
         self.declare_parameter('scan_range_max', 12.0)
-        self.declare_parameter('robot_radius', 0.12)   # metres, for collisions
         self.declare_parameter('cmd_timeout', 0.5)     # stop if commands stop
         self.declare_parameter('viz_port', 8080)
         self.declare_parameter('drive', 'mecanum')     # 'diff': wheels that cannot strafe
@@ -55,9 +58,15 @@ class SimNode(Node):
         self.rate = self.get_parameter('rate').value
         self.beams = self.get_parameter('scan_beams').value
         self.range_max = self.get_parameter('scan_range_max').value
-        self.radius = self.get_parameter('robot_radius').value
         self.cmd_timeout = self.get_parameter('cmd_timeout').value
         self.strafe = self.get_parameter('drive').value != 'diff'
+
+        # Footprint and lidar mounting come from the one shared sensor config.
+        sensors = load_sensor_config()
+        self.footprint = tuple(sensors['robot']['footprint_m'])
+        self.lidar_frame = sensors['lidar']['frame_id']
+        translation, (_, _, self.lidar_yaw) = lidar_mount(sensors)
+        self.lidar_offset = translation[:2]
 
         self.world = world_lib.load(world_name)
         self.segments = self.world['segments']
@@ -118,28 +127,34 @@ class SimNode(Node):
         nx = self.x + (self.vx * cos_t - self.vy * sin_t) * self.dt
         ny = self.y + (self.vx * sin_t + self.vy * cos_t) * self.dt
 
-        # Collision: refuse the move if it would put us inside a wall.
-        if world_lib.min_distance((nx, ny), self.segments) > self.radius:
-            self.x, self.y = nx, ny
-            self.collided = False
-        else:
-            self.collided = True
+        nt = math.atan2(math.sin(self.theta + self.wz * self.dt),
+                        math.cos(self.theta + self.wz * self.dt))
 
-        self.theta = math.atan2(math.sin(self.theta + self.wz * self.dt),
-                                math.cos(self.theta + self.wz * self.dt))
+        # Collision: refuse the whole move, turn included, if the square
+        # footprint would pass into a wall on the way.
+        if motion_collides((self.x, self.y, self.theta), (nx, ny, nt),
+                           self.footprint, self.segments):
+            self.collided = True
+        else:
+            self.x, self.y, self.theta = nx, ny, nt
+            self.collided = False
 
         if math.hypot(self.x - self.trail[-1][0], self.y - self.trail[-1][1]) > 0.05:
             self.trail.append((self.x, self.y))
             if len(self.trail) > 4000:
                 self.trail.pop(0)
 
-        ranges = self.publish_scan()
+        lidar = lidar_world_pose((self.x, self.y, self.theta),
+                                 self.lidar_offset, self.lidar_yaw)
+        ranges = self.publish_scan(lidar)
         self.publish_odom()
         self.viz.update({
             'x': self.x, 'y': self.y, 'theta': self.theta,
             'vx': self.vx, 'vy': self.vy, 'wz': self.wz,
             'collided': self.collided,
             'trail': self.trail,
+            'footprint': self.footprint,
+            'lidar': {'x': lidar[0], 'y': lidar[1], 'yaw': lidar[2]},
             'ranges': ranges,
             'angle_min': -math.pi,
             'angle_increment': 2.0 * math.pi / self.beams,
@@ -147,22 +162,19 @@ class SimNode(Node):
 
     # ----------------------------------------------------------------- output
 
-    def publish_scan(self):
+    def publish_scan(self, lidar):
         scan = LaserScan()
         scan.header.stamp = self.get_clock().now().to_msg()
-        scan.header.frame_id = 'laser_frame'
+        scan.header.frame_id = self.lidar_frame
         scan.angle_min = -math.pi
-        scan.angle_max = math.pi
         scan.angle_increment = 2.0 * math.pi / self.beams
+        # The last beam, not a full turn: angle_max must match len(ranges).
+        scan.angle_max = scan.angle_min + (self.beams - 1) * scan.angle_increment
         scan.range_min = 0.05
         scan.range_max = float(self.range_max)
 
-        ranges = []
-        for i in range(self.beams):
-            # Beam angles are relative to the robot, so add its heading.
-            angle = self.theta + scan.angle_min + i * scan.angle_increment
-            d = world_lib.raycast((self.x, self.y), angle, self.segments, self.range_max)
-            ranges.append(float(d))
+        # Beam angles are relative to the lidar, which is mounted turned.
+        ranges = simulate_ranges(lidar, self.beams, self.segments, self.range_max)
 
         scan.ranges = ranges
         self.scan_pub.publish(scan)

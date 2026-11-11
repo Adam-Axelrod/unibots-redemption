@@ -36,11 +36,10 @@ Two things follow from that:
 - **The lidar's angle 0 is not the robot's straight ahead.** On our robot the
   lidar's 0° points out of the **right** side, even though its arrow points
   forward (checked 2026-11-11). So it is mounted at **-90°**, and that is
-  recorded once, as the yaw of `base_link_to_laser` in `robot.launch.py`.
+  recorded once, in `ws/src/localisation/config/sensors.yaml`.
   Compute a beam's angle as `msg.angle_min + i * msg.angle_increment`, then add
   the mounting yaw from `robot_control.lidar_mount`, as all the nodes here do.
-  Never assume an index, and never assume 0° is ahead. In the simulator the
-  mounting is 0°.
+  Never assume an index, and never assume 0° is ahead. The simulator uses the same mounting.
 - **Resolution is 1°, coarser than the lidar's own 0.8°**, and anything past
   8 m is dropped. At 1 m, 1° is about 17 mm between points, so a 20 mm Atom on
   the floor is at the edge of what it can see, even if the lidar is mounted low
@@ -83,8 +82,8 @@ Notes on that driver, should you need it:
 
 The lidar must see over everything else on the robot. Anything on the chassis
 at the same height as the lidar shows up in every scan as a fixed blind spot.
-Its height and offset from the robot's centre go in `robot.launch.py`
-(`base_link_to_laser`); see [chassis.md](chassis.md).
+Its height and offset from the robot's centre go in
+`ws/src/localisation/config/sensors.yaml`; see [chassis.md](chassis.md).
 
 The arena walls are 157 mm tall, so the lidar sees them as long as it sits
 below about 150 mm. Allow for the laser's 0.5-2° upward tilt: across the

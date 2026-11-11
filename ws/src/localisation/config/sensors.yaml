@@ -1,3 +1,4 @@
+
 # ws/src/localisation/config/sensors.yaml
 
 robot:
@@ -8,11 +9,13 @@ lidar:
   topic: /scan
   frame_id: laser_frame
 
-  # Measure relative to base_footprint.
-  translation_m: [-0.005, 0.0, 0.144]
-  rotation_rpy_deg: [0.0, 0.0, 0.0]
+  # Position relative to the centre of base_footprint
+  translation_m: [0.020, 0.0, 0.144]
 
-  # Robot-relative angles, excluding the obstructed rear.
+  # LiDAR zero angle points towards the robot's right
+  rotation_rpy_deg: [0.0, 0.0, -90.0]
+
+  # Robot-relative angles, excluding the obstructed rear
   usable_sector_deg: [-100.0, 100.0]
 
 imu:

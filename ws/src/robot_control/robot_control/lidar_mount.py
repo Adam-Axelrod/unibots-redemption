@@ -2,7 +2,7 @@
 
 /scan's angles are the lidar's own: its 0 deg is wherever the lidar's 0 deg
 points, which on our robot is out of the right side. The launch files say how
-it is mounted, as the base_link -> laser_frame transform, and this reads it, so
+it is mounted, as the base_footprint -> laser_frame transform, and this reads it, so
 that every node agrees with slam_toolbox and nobody hard-codes the angle.
 
     mount = LidarMount(node)

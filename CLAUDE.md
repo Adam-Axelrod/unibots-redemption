@@ -156,8 +156,9 @@ points at 1°, angle_min -180°: always use `angle_min + i * angle_increment`).
 Nothing on the Pi reads the lidar.
 
 ⚠️ **The lidar's 0° is not straight ahead on our robot: it is mounted at -90°**
-(its 0° points out of the right side). That is the yaw of `base_link_to_laser`
-in `robot.launch.py`, and the only place it is set. Every node that reads
+(its 0° points out of the right side). It is set once, in
+`ws/src/localisation/config/sensors.yaml`, which both launch files and the
+simulator read. Every node that reads
 `/scan` adds it via `robot_control.lidar_mount`; do the same in new nodes.
 
 The repo also has a Pi-side MS200 driver (`oradar_lidar`, vendored in

@@ -142,9 +142,11 @@ function draw() {
     ctx.beginPath();
     state.ranges.forEach((r, i) => {
       if (!isFinite(r)) return;
-      const a = state.theta + state.angle_min + i * state.angle_increment;
-      ctx.moveTo(tx(state.x), ty(state.y));
-      ctx.lineTo(tx(state.x + r * Math.cos(a)), ty(state.y + r * Math.sin(a)));
+      // Rays start at the lidar and include its mounting yaw.
+      const o = state.lidar || { x: state.x, y: state.y, yaw: state.theta };
+      const a = o.yaw + state.angle_min + i * state.angle_increment;
+      ctx.moveTo(tx(o.x), ty(o.y));
+      ctx.lineTo(tx(o.x + r * Math.cos(a)), ty(o.y + r * Math.sin(a)));
     });
     ctx.stroke();
   }
@@ -159,18 +161,30 @@ function draw() {
   if (state && typeof state.x === 'number') drawRobot(state);
 }
 
+// The configured square footprint, with the front edge marked.
 function drawRobot(s) {
-  const r = 0.14 * scale;
+  const [length, width] = s.footprint || [0.2, 0.2];
+  const hx = length / 2 * scale, hy = width / 2 * scale;
   ctx.save();
   ctx.translate(tx(s.x), ty(s.y));
   ctx.rotate(-s.theta);                       // canvas y is flipped
   ctx.fillStyle = s.collided
     ? getComputedStyle(document.documentElement).getPropertyValue('--hit').trim()
     : getComputedStyle(document.documentElement).getPropertyValue('--robot').trim();
+  ctx.fillRect(-hx, -hy, 2 * hx, 2 * hy);
+  ctx.strokeStyle = '#0f1419'; ctx.lineWidth = 3;
   ctx.beginPath();
-  ctx.moveTo(r * 1.4, 0); ctx.lineTo(-r, r * 0.85); ctx.lineTo(-r, -r * 0.85);
-  ctx.closePath(); ctx.fill();
+  ctx.moveTo(hx, -hy); ctx.lineTo(hx, hy);    // front edge
+  ctx.moveTo(0, 0); ctx.lineTo(hx, 0);        // heading
+  ctx.stroke();
   ctx.restore();
+
+  if (s.lidar) {
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--ray').trim();
+    ctx.beginPath();
+    ctx.arc(tx(s.lidar.x), ty(s.lidar.y), 3, 0, 2 * Math.PI);
+    ctx.fill();
+  }
 }
 
 // ---- live state ------------------------------------------------------------

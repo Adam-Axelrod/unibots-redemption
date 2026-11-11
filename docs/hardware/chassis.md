@@ -50,21 +50,23 @@ To design in from the start, all checked at inspection:
 ## Sensor positions
 
 `ws/src/robot_bringup/launch/robot.launch.py` publishes where the lidar and IMU
-sit relative to the robot's centre (`base_link`). The current numbers were
+sit relative to the robot's centre. The lidar's mounting comes from
+`ws/src/localisation/config/sensors.yaml`, relative to `base_footprint`; its
+20 mm forward offset is provisional. The current numbers were
 measured on **Yahboom's** car and are wrong for ours. Once the chassis is
 printed, measure and update:
 
 | Transform | What to measure |
 |---|---|
 | `base_footprint_to_base_link` | height of the chassis centre above the floor |
-| `base_link_to_laser` | lidar's centre: forward/back, left/right, height |
+| `lidar.translation_m` in `sensors.yaml` | lidar's centre above the floor point: forward/back, left/right, height |
 | `base_link_to_imu` | control board's IMU chip: forward/back, left/right, height |
 
 Distances in metres, forward is +x, left is +y, up is +z. If a sensor is
 mounted rotated, set its yaw too, anticlockwise positive seen from above. The
 lidar's yaw is **-90°** (its 0° points out of the right side): see
-[lidar.md](lidar.md). The nodes read it from this transform, so change it here
-and nowhere else.
+[lidar.md](lidar.md). The nodes read it from the transform, so change it in
+`sensors.yaml` and nowhere else.
 
 ## Collection mechanism
 
