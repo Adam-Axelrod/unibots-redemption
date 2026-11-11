@@ -15,8 +15,11 @@ import math
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import ExternalShutdownException
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Float32MultiArray
+
+from robot_control.lidar_mount import LidarMount
 
 
 class RoomMapper(Node):
@@ -27,18 +30,22 @@ class RoomMapper(Node):
         self.declare_parameter('report_every', 2.0)   # seconds between reports
 
         self.pub = self.create_publisher(Float32MultiArray, 'room_size', 10)
-        self.create_subscription(LaserScan, 'scan', self.on_scan, 10)
+        self.create_subscription(LaserScan, 'scan', self.on_scan, qos_profile_sensor_data)
+        self.mount = LidarMount(self)    # which way the lidar faces on the robot
 
         self.latest = None
         self.create_timer(self.get_parameter('report_every').value, self.report)
         self.get_logger().info('measuring the room from /scan')
 
     def on_scan(self, msg: LaserScan):
+        yaw = self.mount.yaw(msg.header.frame_id)
+        if yaw is None:
+            return                        # not yet known which way the lidar faces
         xs, ys = [], []
         for i, r in enumerate(msg.ranges):
             if not math.isfinite(r) or r < msg.range_min or r >= msg.range_max:
                 continue
-            angle = msg.angle_min + i * msg.angle_increment
+            angle = msg.angle_min + i * msg.angle_increment + yaw   # on the robot
             xs.append(r * math.cos(angle))
             ys.append(r * math.sin(angle))
 

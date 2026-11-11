@@ -18,10 +18,12 @@ import math
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import ExternalShutdownException
+from rclpy.qos import qos_profile_sensor_data
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 
+from robot_control.lidar_mount import LidarMount
 from robot_control.util import yaw_from_quaternion, angle_diff
 
 
@@ -44,7 +46,10 @@ class SweepPlanner(Node):
 
         self.pub = self.create_publisher(Twist, 'cmd_vel', 10)
         self.create_subscription(Odometry, 'odom', self.on_odom, 10)
-        self.create_subscription(LaserScan, 'scan', self.on_scan, 10)
+        # Best effort hears the board's /scan whether it is sent best effort
+        # or reliably; the default, reliable, would hear nothing from the first.
+        self.create_subscription(LaserScan, 'scan', self.on_scan, qos_profile_sensor_data)
+        self.mount = LidarMount(self)    # which way the lidar faces on the robot
 
         self.pose = None
         self.front = math.inf            # metres to the nearest thing ahead
@@ -65,12 +70,15 @@ class SweepPlanner(Node):
 
     def on_scan(self, msg: LaserScan):
         """Nearest valid return within a narrow cone straight ahead."""
+        yaw = self.mount.yaw(msg.header.frame_id)
+        if yaw is None:
+            return                        # not yet known which beams are ahead
         nearest = math.inf
         for i, r in enumerate(msg.ranges):
             if not math.isfinite(r) or r < msg.range_min or r >= msg.range_max:
                 continue
-            angle = msg.angle_min + i * msg.angle_increment
-            if abs(angle) <= self.front_arc:      # angle 0 == straight ahead
+            angle = angle_diff(msg.angle_min + i * msg.angle_increment + yaw, 0.0)
+            if abs(angle) <= self.front_arc:      # angle 0 == straight ahead on the robot
                 nearest = min(nearest, r)
         self.front = nearest
 
@@ -78,6 +86,12 @@ class SweepPlanner(Node):
 
     def tick(self):
         if self.pose is None:
+            return
+        if self.mount.yaw() is None:
+            # Not knowing which way the lidar faces, "ahead" means nothing.
+            self.get_logger().warn('no base_footprint -> laser_frame transform -- '
+                                   'is the launch file running?', throttle_duration_sec=2.0)
+            self.pub.publish(Twist())
             return
 
         x, y, yaw = self.pose

@@ -75,6 +75,7 @@ from sensor_msgs.msg import LaserScan
 from robot_control.util import yaw_from_quaternion, angle_diff
 from robot_control.coverage_map import GridMap, wall_angle
 from robot_control.driver_view import DriverView
+from robot_control.lidar_mount import LidarMount
 
 # Lane directions in coverage-grid steps: along the walls, then round by 90 deg.
 DIRS = [(1, 0), (0, 1), (-1, 0), (0, -1)]
@@ -187,6 +188,9 @@ class SquareDriver(Node):
 
         self.create_timer(0.05, self.tick)   # 20 Hz control loop
 
+        self.mount = LidarMount(self)
+        self.tf_buffer = self.mount.buffer
+        self.lidar_yaw = None            # which way the lidar faces on the robot
         self.use_slam = self.get_parameter('use_slam').value
         if self.use_slam:
             self._start_slam()
@@ -231,10 +235,18 @@ class SquareDriver(Node):
     def on_scan(self, msg: LaserScan):
         """Keep the scan as (x, y) points around the robot (x ahead, y left),
         and add it to the map a few times a second."""
+        if self.lidar_yaw is None:
+            # Until we know which way the lidar faces, a scan could point
+            # anywhere, so use none.
+            self.lidar_yaw = self.mount.yaw(msg.header.frame_id)
+            if self.lidar_yaw is None:
+                return
+            self.get_logger().info('lidar mounted at %.0f deg' % math.degrees(self.lidar_yaw))
         points, beams = [], []
         for i, r in enumerate(msg.ranges):
-            angle = msg.angle_min + i * msg.angle_increment    # 0 == straight ahead
-            if abs(angle_diff(angle, 0.0)) > self.view:
+            # The beam's angle on the robot: 0 == straight ahead, + to the left.
+            angle = angle_diff(msg.angle_min + i * msg.angle_increment + self.lidar_yaw, 0.0)
+            if abs(angle) > self.view:
                 continue                  # the chassis, not the world: it would
                                           # look like something touching the robot
             if math.isfinite(r) and msg.range_min <= r < msg.range_max:
@@ -267,9 +279,17 @@ class SquareDriver(Node):
                 self.doing, self.alert = 'waiting: no position from SLAM yet', True
             return
         if self.last_scan is None or self._age(self.last_scan) > self.scan_timeout:
-            self.get_logger().warn('no /scan -- stopped until the lidar is back',
-                                   throttle_duration_sec=2.0)
-            self.doing, self.alert = 'stopped: no lidar data', True
+            if self.lidar_yaw is None:
+                self.get_logger().warn('no base_footprint -> laser_frame transform, so which '
+                                       'way the lidar faces is unknown -- waiting. Is '
+                                       'robot.launch.py (or sim.launch.py) running?',
+                                       throttle_duration_sec=2.0)
+                self.doing = 'waiting: which way the lidar is mounted (transform)'
+            else:
+                self.get_logger().warn('no /scan -- stopped until the lidar is back',
+                                       throttle_duration_sec=2.0)
+                self.doing = 'stopped: no lidar data'
+            self.alert = True
             self.last_cmd = Twist()
             self.pub.publish(self.last_cmd)   # driving blind is not allowed
             return
@@ -725,10 +745,6 @@ class SquareDriver(Node):
         """Imported here so that without SLAM, nothing about it is needed."""
         from nav_msgs.msg import OccupancyGrid
         from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-        from tf2_ros.buffer import Buffer
-        from tf2_ros.transform_listener import TransformListener
-        self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
         # slam_toolbox publishes /map once in a while and keeps the latest for
         # late joiners, so this must ask for that or it may hear nothing.
         latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,

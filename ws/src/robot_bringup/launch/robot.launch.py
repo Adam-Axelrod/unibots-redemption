@@ -80,18 +80,23 @@ def generate_launch_description():
             output='screen',
         ),
 
-        # Where the sensors sit on the chassis. These were measured on Yahboom's
-        # car and must be re-measured on ours: see docs/hardware/chassis.md.
+        # Where the sensors sit on the chassis. The distances were measured on
+        # Yahboom's car and must be re-measured on ours: see
+        # docs/hardware/chassis.md. Arguments: x y z yaw pitch roll parent child.
         Node(
             package='tf2_ros', executable='static_transform_publisher',
             name='base_footprint_to_base_link',
             arguments=['0', '0', '0.05', '0', '0', '0',
                        'base_footprint', 'base_link'],
         ),
+        # The lidar's own 0 deg points out of the robot's right side, although
+        # its arrow points forward (checked 2026-11-11): so it is turned -90 deg
+        # (clockwise, seen from above). square_driver, scan_for_slam and
+        # slam_toolbox all read this, so it is the one place to change it.
         Node(
             package='tf2_ros', executable='static_transform_publisher',
             name='base_link_to_laser',
-            arguments=['-0.0046412', '0', '0.094079', '0', '0', '0',
+            arguments=['-0.0046412', '0', '0.094079', '-1.5707963', '0', '0',
                        'base_link', 'laser_frame'],
         ),
         Node(

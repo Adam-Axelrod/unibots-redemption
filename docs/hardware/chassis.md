@@ -59,8 +59,11 @@ printed, measure and update:
 | `base_link_to_laser` | lidar's centre: forward/back, left/right, height |
 | `base_link_to_imu` | control board's IMU chip: forward/back, left/right, height |
 
-Distances in metres, forward is +x, left is +y, up is +z. The lidar's 0° must
-point straight ahead; if it's mounted rotated, add the yaw angle too.
+Distances in metres, forward is +x, left is +y, up is +z. If a sensor is
+mounted rotated, set its yaw too, anticlockwise positive seen from above. The
+lidar's yaw is **-90°** (its 0° points out of the right side): see
+[lidar.md](lidar.md). The nodes read it from this transform, so change it here
+and nowhere else.
 
 ## Collection mechanism
 
