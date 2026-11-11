@@ -107,7 +107,7 @@
       <label><input type="checkbox" id="s-map" checked>
         <span class="swatch" style="background:var(--wall)"></span>map: walls</label>
       <label><input type="checkbox" id="s-cov" checked>
-        <span class="swatch" style="background:var(--done)"></span>visited cells; edges outlined; current zone dashed</label>
+        <span class="swatch" style="background:var(--done)"></span>visited cells; vacuum edges and zone, or BCD regions in order</label>
       <label><input type="checkbox" id="s-plan" checked>
         <span class="swatch" style="background:var(--plan)"></span>plan</label>
       <label><input type="checkbox" id="s-trail" checked>
@@ -208,6 +208,35 @@ function draw() {
     for (const [i, j] of state.cover.edges || []) outline(i, j, i, j, 'rgba(77,212,192,0.35)', []);
     const z = state.cover.zone;
     if (z) outline(z[0] * z[2], z[1] * z[2], z[0] * z[2] + z[2] - 1, z[1] * z[2] + z[2] - 1, css('--plan'), [10, 6]);
+
+    // BCD regions: a line wherever neighbouring cells are in different
+    // regions, the order to sweep them, and the current one in yellow.
+    const regions = state.cover.regions || [];
+    const owner = new Map();
+    regions.forEach((cells, k) => cells.forEach(([i, j]) => owner.set(i + ',' + j, k)));
+    ctx.save();
+    ctx.translate(tx(ox), ty(oy)); ctx.rotate(-a);
+    const s = w * scale;
+    regions.forEach((cells, k) => {
+      ctx.strokeStyle = k === state.cover.region ? css('--plan') : 'rgba(230,237,243,0.55)';
+      ctx.lineWidth = k === state.cover.region ? 3 : 2;
+      ctx.beginPath();
+      for (const [i, j] of cells) {
+        const x0 = (i - 0.5) * s, x1 = (i + 0.5) * s, y0 = -(j + 0.5) * s, y1 = -(j - 0.5) * s;
+        if (owner.get((i + 1) + ',' + j) !== k) { ctx.moveTo(x1, y0); ctx.lineTo(x1, y1); }
+        if (owner.get((i - 1) + ',' + j) !== k) { ctx.moveTo(x0, y0); ctx.lineTo(x0, y1); }
+        if (owner.get(i + ',' + (j + 1)) !== k) { ctx.moveTo(x0, y0); ctx.lineTo(x1, y0); }
+        if (owner.get(i + ',' + (j - 1)) !== k) { ctx.moveTo(x0, y1); ctx.lineTo(x1, y1); }
+      }
+      ctx.stroke();
+      const ci = cells.reduce((t, c) => t + c[0], 0) / cells.length;
+      const cj = cells.reduce((t, c) => t + c[1], 0) / cells.length;
+      ctx.save(); ctx.translate(ci * s, -cj * s); ctx.rotate(a - turn());
+      ctx.fillStyle = ctx.strokeStyle; ctx.font = 'bold 20px ui-monospace, monospace';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(String(k + 1), 0, 0);
+      ctx.restore();
+    });
+    ctx.restore();
   }
 
   if (grid && on('s-map')) {

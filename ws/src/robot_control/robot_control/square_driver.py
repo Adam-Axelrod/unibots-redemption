@@ -24,6 +24,13 @@ Within either, lanes work the same way:
 
 motion:=lanes skips the edges and the zones, and lanes the whole room at once.
 
+motion:=bcd plans the whole sweep at once instead (robot_control.bcd): split
+the floor into regions each covered by straight back-and-forth lanes
+(Boustrophedon Cellular Decomposition), pick each region's lane direction and
+starting corner, and the order of regions, for the least driving -- turns
+counted as the distance we could have driven while turning. The plan is
+redone as the map grows.
+
 At the start the robot works out which way the walls run (coverage_map.wall_angle)
 and lines the lanes up with them, so it does not matter which way it is facing.
 
@@ -81,6 +88,7 @@ from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 
 from robot_control.util import yaw_from_quaternion, angle_diff
+from robot_control import bcd
 from robot_control.coverage_map import GridMap, wall_angle
 from robot_control.driver_view import DriverView
 from robot_control.lidar_mount import LidarMount
@@ -91,6 +99,13 @@ DIRS = [(1, 0), (0, 1), (-1, 0), (0, -1)]
 
 def clamp(value, limit):
     return max(-limit, min(limit, value))
+
+
+def _cells_between(a, b):
+    """The coverage cells on the straight line from a to b, both included."""
+    n = abs(b[0] - a[0]) + abs(b[1] - a[1])
+    di, dj = (b[0] > a[0]) - (b[0] < a[0]), (b[1] > a[1]) - (b[1] < a[1])
+    return [(a[0] + k * di, a[1] + k * dj) for k in range(n + 1)]
 
 
 def _run(cells, start, d):
@@ -112,7 +127,7 @@ class SquareDriver(Node):
         self.declare_parameter('drive', 'mecanum')     # or 'diff', if it cannot strafe
         self.declare_parameter('lane_style', 'auto')   # mecanum: 'sideways', 'forward', or
                                                        # 'auto': forward for vacuum, else sideways
-        self.declare_parameter('motion', 'vacuum')     # or 'lanes', or 'random' to wander
+        self.declare_parameter('motion', 'vacuum')     # or 'bcd', 'lanes', or 'random' to wander
         self.declare_parameter('zone_size', 3)         # vacuum: zone width in lane_width cells
         self.declare_parameter('random_seed', 0)       # 0: different every run
         self.declare_parameter('use_slam', False)      # position from slam_toolbox
@@ -150,16 +165,18 @@ class SquareDriver(Node):
             raise ValueError(f"drive must be 'mecanum' or 'diff', not '{drive}'")
         self.strafe = drive == 'mecanum'
         motion = self.get_parameter('motion').value
-        if motion not in ('vacuum', 'lanes', 'random'):
-            raise ValueError(f"motion must be 'vacuum', 'lanes' or 'random', not '{motion}'")
+        if motion not in ('vacuum', 'bcd', 'lanes', 'random'):
+            raise ValueError("motion must be 'vacuum', 'bcd', 'lanes' or 'random', "
+                             f"not '{motion}'")
         self.wandering = motion == 'random'
         self.vacuum = motion == 'vacuum'
+        self.use_bcd = motion == 'bcd'
         lane_style = self.get_parameter('lane_style').value
         if lane_style == 'auto':
             # A vacuum drives forwards. In tests, strafing down lanes let wheel
             # slip drift us into boxes beside our blind back; facing forward
             # it never did, and covered as much.
-            lane_style = 'forward' if self.vacuum else 'sideways'
+            lane_style = 'sideways' if motion == 'lanes' else 'forward'
         if lane_style not in ('sideways', 'forward'):
             raise ValueError("lane_style must be 'auto', 'sideways' or 'forward', "
                              f"not '{lane_style}'")
@@ -204,6 +221,13 @@ class SquareDriver(Node):
         self.phase = 'edges'             # vacuum: 'edges', then 'zones'
         self.zone = None                 # vacuum: the zone being filled, (zi, zj)
         self.edges = set()               # vacuum: coverage cells along the outside
+        self.bcd_key = frozenset()       # bcd: the cells the plan was made for
+        self.outside_spots = set()       # cells only reachable from just outside them
+        self.bcd_plan = []               # bcd: [(region, axis, lanes)] in sweep order
+        self.bcd_region = None           # bcd: index of the region being swept
+        self.bcd_lane = None             # bcd: the lane being driven, (start, end)
+        self.surveyed = 0.0              # bcd: how far we have turned, looking round first
+        self.survey_yaw = None
         self.tour = None                 # vacuum: which way round the edges, +1 or -1
         self.lap = 0.0                   # vacuum: how far round the edges we have been, rad
         self.lap_angle = None            # ...measured from here, round the room's middle
@@ -246,9 +270,9 @@ class SquareDriver(Node):
                 self.viewer = None
                 self.get_logger().warn(f'no live view: cannot use port {port} ({err})')
         what = 'wandering at random' if self.wandering else \
-            ('cleaning like a robot vacuum: edges first, then zone by zone'
-             if self.vacuum else 'covering the room in lanes') + \
-            f' -- lanes {self.lane_width} m apart'
+            ('cleaning like a robot vacuum: edges first, then zone by zone' if self.vacuum else
+             'boustrophedon cellular decomposition, fewest turns' if self.use_bcd else
+             'covering the room in lanes') + f' -- lanes {self.lane_width} m apart'
         self.get_logger().info(f'{what}, {drive} drive, position from '
                                + ('slam_toolbox' if self.use_slam else 'wheel odometry'))
 
@@ -339,6 +363,20 @@ class SquareDriver(Node):
         if self.frame is None:
             self._line_up_with_walls(x, y, yaw)
             self.started = self.get_clock().now()
+
+        if self.use_bcd and self.surveyed < 2 * math.pi:
+            # BCD plans the whole sweep at once, so first turn once on the spot
+            # to map all round: the lidar cannot see behind us. Real robot
+            # vacuums do the same.
+            if self.survey_yaw is not None:
+                self.surveyed += abs(angle_diff(yaw, self.survey_yaw))
+            self.survey_yaw = yaw
+            self.doing, self.alert = 'looking round before planning', False
+            cmd = Twist()
+            cmd.angular.z = self.turn_speed
+            self.last_cmd = cmd
+            self.pub.publish(cmd)
+            return
         if not self.trail or math.hypot(x - self.trail[-1][0], y - self.trail[-1][1]) > 0.03:
             self.trail.append((round(x, 2), round(y, 2)))
             del self.trail[:-600]
@@ -446,6 +484,8 @@ class SquareDriver(Node):
         if self.vacuum:
             self.doing = ('edges: ' if self.phase == 'edges' else
                           f'zone {self.zone[0]},{self.zone[1]}: ') + self.doing
+        elif self.use_bcd and self.bcd_region is not None:
+            self.doing = f'region {self.bcd_region + 1} of {len(self.bcd_plan)}: ' + self.doing
         a = math.hypot(ax - x, ay - y)
         if a < 0.01:
             return
@@ -702,6 +742,8 @@ class SquareDriver(Node):
             target = self.target          # may be covered on the way: still the lane's end
         elif self.vacuum:
             target = self._vacuum_choose(here, spots, todo, dist)
+        elif self.use_bcd:
+            target = self._bcd_next(here, spots) or self._choose(here, todo, dist)
         else:
             target = self._choose(here, todo, dist)
 
@@ -740,8 +782,84 @@ class SquareDriver(Node):
                     if c not in edge or off < edge[c][1]:
                         edge[c] = (f, off)
         spots.update(edge)
+        self.outside_spots = set(edge)
         self.reachable = {c: self.map.centre(f) for c, (f, _) in spots.items()}
         return spots
+
+    def _bcd_next(self, here, spots):
+        """The next cell on the BCD plan: the start of the first lane with any
+        cell still to sweep, or, already on it, its far end. None if the plan
+        has nothing left."""
+        x, y, _ = self.pose
+
+        def at(c):
+            """At a cell: in it, or at the spot we can reach in it. A cell in
+            the strip along a wall can't be stood in, only reached the edge of."""
+            spot = self.reachable.get(c)
+            return c == here or (spot is not None and math.hypot(spot[0] - x, spot[1] - y) < 0.12)
+
+        if self.bcd_lane is not None and at(self.bcd_lane[1]):
+            # We drove that lane to its end: it is swept, even if a cell by a
+            # wall never got a close enough pass to count by itself.
+            self.covered.update(_cells_between(*self.bcd_lane))
+        self.bcd_lane = None
+        # Plan over cells we can stand in. A cell in the strip along a wall is
+        # swept from the lane beside it, so it needs no lane of its own.
+        cells = frozenset(c for c in spots if c not in self.outside_spots)
+        # Replan only if the map has grown a lot: replanning for every little
+        # change reshuffles the regions and has us hop about.
+        if len(cells - self.bcd_key) > max(2, len(self.bcd_key) // 4) or not self.bcd_plan:
+            self._bcd_replan(here, cells)
+        for k, (region, axis, ls) in enumerate(self.bcd_plan):
+            for a, b in ls:
+                line = _cells_between(a, b)
+                if all(c in self.covered or c in self.skipped for c in line):
+                    continue
+                if a not in spots or b not in spots:
+                    continue                           # can't get there now: a later replan
+                self.bcd_region = k
+                if a == b:
+                    self.lane = 0 if axis == 0 else 1
+                else:
+                    self.lane = DIRS.index(((b[0] > a[0]) - (b[0] < a[0]),
+                                            (b[1] > a[1]) - (b[1] < a[1])))
+                if at(b):
+                    self.lane = (self.lane + 2) % 4    # at its end: sweep back
+                    self.lane_start = False
+                    self.bcd_lane = (b, a)
+                    return a
+                if here in line or at(a):
+                    self.lane_start = False            # on it: drive to its end
+                    self.bcd_lane = (a, b)
+                    return b
+                self.lane_start = True
+                return a
+        return None
+
+    def _bcd_replan(self, here, cells):
+        """Plan the sweep afresh for the reachable cells as the map now has
+        them. Turns cost the distance we could have driven while turning; an
+        about turn only if we turn round at the end of every lane."""
+        def turn(angle):
+            return angle / self.turn_speed * self.speed
+        uturn = 0.0 if self.sideways else turn(math.pi)
+        before = self.bcd_plan[self.bcd_region][0] if self.bcd_region is not None and \
+            self.bcd_region < len(self.bcd_plan) else set()
+        # Keep sweeping the way we were unless the other way is clearly
+        # better: in a square room the two cost nearly the same, and flipping
+        # between them on every replan leaves a criss-cross of half lanes.
+        current = self.bcd_plan[self.bcd_region or 0][1] if self.bcd_plan else None
+        cost, plan = bcd.plan(set(cells), here, self.lane_width, turn(math.pi / 2), uturn,
+                              exhaustive=5, prefer_axis=current, switch_cost=1.0)
+        # The map only grew a little: carry on with the region we were in
+        # rather than going wherever the new plan would start.
+        if before and plan:
+            k = max(range(len(plan)), key=lambda k: len(plan[k][0] & before))
+            if len(plan[k][0] & before) > len(before) // 2:
+                plan.insert(0, plan.pop(k))
+        if len(plan) != len(self.bcd_plan):
+            self.get_logger().info('BCD: %d regions, planned cost %.1f m' % (len(plan), cost))
+        self.bcd_plan, self.bcd_key, self.bcd_region = plan, frozenset(cells), None
 
     def _vacuum_choose(self, here, spots, todo, dist):
         """The next cell for a robot vacuum: round the edges while any are
@@ -940,6 +1058,8 @@ class SquareDriver(Node):
                 'skipped': sorted(self.skipped),
                 'edges': sorted(self.edges) if self.vacuum else [],
                 'zone': [*self.zone, self.zone_size] if self.vacuum and self.zone else None,
+                'regions': [sorted(r) for r, _, _ in self.bcd_plan] if self.use_bcd else [],
+                'region': self.bcd_region,
                 'todo': [c for c in self.reachable
                          if c not in self.covered and c not in self.skipped],
             }

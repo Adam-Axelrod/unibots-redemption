@@ -169,7 +169,17 @@ The page only reads, so it can't drive the robot. For a match, turn it off with
 |---|---|---|
 | **Robot vacuum** (default) | `square_driver` | add `-p use_slam:=true` |
 | **Lanes** | add `-p motion:=lanes` | add both |
+| **BCD**, fewest turns (experimental) | add `-p motion:=bcd` | add both |
 | **Random walk** | add `-p motion:=random` | add both |
+
+**BCD** follows Luo et al., *Complete Coverage Path Planning for Intelligent
+Sweeping Robot* (IEEE IPEC 2021): after turning once on the spot to map all
+round, it splits the floor into regions each swept by back-and-forth lanes,
+merges regions one set of lanes can still cover, and picks each region's lane
+direction, starting corner and the order of regions for the least driving,
+counting turns as distance (`robot_control/bcd.py`). In simulated tests it
+covered less than the vacuum pattern and came close to boxes more often, so it
+is not the default.
 
 For SLAM, rebuild the image once with `docker compose --profile robot up --build
 robot`, which adds `slam_toolbox`. Then start it in its own terminal before the
