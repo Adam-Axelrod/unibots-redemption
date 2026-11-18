@@ -10,8 +10,9 @@ Run it next to anything that publishes /scan -- the real robot or the sim:
 
     ros2 run robot_bringup lidar_viewer
 
-then open http://<machine>:8081. On the Pi, from a laptop on the tailnet, that
-is http://raspberrypi:8081 (see docs/hardware/lidar.md).
+and Ctrl-click the address it prints. On the Pi that is its full Tailscale
+name, which works from every laptop on the tailnet, including the ones the Pi
+is only shared with (see docs/hardware/lidar.md).
 
 It only listens: it never publishes, so it is safe to run next to a driving
 node. Like the simulator's visualiser it uses only the standard library and
@@ -22,6 +23,8 @@ Not for matches: the rules forbid any remote connection during one (R8).
 import json
 import math
 import os
+import socket
+import struct
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -43,6 +46,8 @@ class LidarViewer(Node):
         self.declare_parameter('port', 8081)
         self.declare_parameter('host', '0.0.0.0')
         self.declare_parameter('scan_topic', 'scan')
+        # The name to print in the clickable address. Empty means ask Tailscale.
+        self.declare_parameter('url_host', '')
 
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
@@ -61,7 +66,14 @@ class LidarViewer(Node):
         self._httpd.daemon_threads = True    # open browser tabs must not block exit
         threading.Thread(target=self._httpd.serve_forever, daemon=True).start()
 
-        self.get_logger().info(f'showing /{topic.lstrip("/")} at http://{host}:{port}')
+        # host is what we listen on (0.0.0.0 = every network), which is not an
+        # address anyone can open. Print ones that are, so they can be clicked.
+        name = self.get_parameter('url_host').value or _tailscale_name()
+        lines = [f'showing /{topic.lstrip("/")}. Ctrl-click to open:']
+        if name:
+            lines.append(f'    http://{name}:{port}    <- any laptop on Tailscale')
+        lines.append(f'    http://localhost:{port}    <- this machine only')
+        self.get_logger().info('\n'.join(lines))
 
     def on_scan(self, msg: LaserScan):
         now = time.monotonic()
@@ -93,6 +105,69 @@ class LidarViewer(Node):
 
     def stop(self):
         self._httpd.shutdown()
+
+
+def _tailscale_name(timeout=0.5):
+    """This machine's full Tailscale name, e.g. raspberrypi.tail6c0787.ts.net.
+
+    The full name matters: the short one (raspberrypi) only resolves inside the
+    owner's own tailnet, not on the laptops the Pi is shared with.
+
+    The Tailscale CLI is not in the container, so ask Tailscale's DNS server
+    directly. It is always at 100.100.100.100 on a tailnet device, whatever
+    /etc/resolv.conf says, and answers a reverse lookup of our own Tailscale
+    address with our full name. Returns None when not on Tailscale (a laptop
+    running the sim), in which case only localhost is printed.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.settimeout(timeout)
+            s.connect(('100.100.100.100', 53))   # UDP: sends nothing, picks a route
+            ip = s.getsockname()[0]               # our address on that route
+            if not ip.startswith('100.'):
+                return None                       # not routed via Tailscale
+            # A DNS query: header (id, recursion wanted, 1 question), then
+            # "4.3.2.1.in-addr.arpa" as length-prefixed labels, type PTR, class IN.
+            labels = ip.split('.')[::-1] + ['in-addr', 'arpa']
+            query = (struct.pack('>6H', 0x5eed, 0x0100, 1, 0, 0, 0)
+                     + b''.join(bytes([len(p)]) + p.encode() for p in labels)
+                     + b'\0' + struct.pack('>2H', 12, 1))
+            s.send(query)
+            reply = s.recv(512)
+    except OSError:
+        return None                               # no route, or no answer in time
+    try:
+        if struct.unpack('>H', reply[6:8])[0] == 0:
+            return None                           # no answers
+        # The reply repeats our question (same length as ours), then the answer:
+        # its name, 10 bytes of type/class/ttl/length, then the name we want.
+        _, pos = _read_dns_name(reply, len(query))
+        name, _ = _read_dns_name(reply, pos + 10)
+        return name or None
+    except (IndexError, struct.error, UnicodeDecodeError):
+        return None
+
+
+def _read_dns_name(msg, pos):
+    """Decode the DNS name at msg[pos].
+
+    Returns (name, position just after it). A name is length-prefixed labels
+    ending in a zero byte, or ending in a 2-byte pointer to the rest of the
+    name elsewhere in the message (compression). Servers use either form.
+    """
+    parts, end = [], None
+    for _ in range(64):                           # bound the loop on bad input
+        n = msg[pos]
+        if n == 0:
+            return '.'.join(parts), (end if end is not None else pos + 1)
+        if n >= 0xC0:                             # pointer: jump, but the name
+            if end is None:                       # ends right after the pointer
+                end = pos + 2
+            pos = struct.unpack('>H', msg[pos:pos + 2])[0] & 0x3FFF
+            continue
+        parts.append(msg[pos + 1:pos + 1 + n].decode())
+        pos += 1 + n
+    raise IndexError('DNS name too long')
 
 
 def _make_handler(viewer):
