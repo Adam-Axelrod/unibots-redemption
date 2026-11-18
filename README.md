@@ -99,13 +99,9 @@ your code moves between them without changes:
 | `/scan` | `sensor_msgs/LaserScan` | robot → you: lidar distances |
 | `/odom` | `nav_msgs/Odometry` | robot → you: where it thinks it is |
 
-In the simulator, `linear.y` strafes sideways. The real robot cannot
-strafe with the current Yahboom firmware, which ignores `linear.y`.
-See [esp32-board.md](docs/hardware/esp32-board.md#firmware).
+`linear.y` strafes sideways, in the simulator and on the real robot. The robot needs
+[our own firmware](firmware/README.md) for this, because Yahboom's ignores `linear.y`.
 
-`square_driver` uses sideways lanes by default, which require working strafe
-control. Until custom firmware is validated, use `--ros-args -p drive:=diff`
-on the real robot.
 If something has to face the way it is going, like a front-mounted collector, use
 `--ros-args -p lane_style:=forward`: it faces along each lane, and slides across
 to the next one while turning round.

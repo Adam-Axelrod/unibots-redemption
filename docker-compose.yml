@@ -14,7 +14,7 @@ services:
     # the port explicitly instead -- this behaves the same everywhere.
     ports:
       - "8080:8080"
-      - "8081:8081"        # square_driver's view of what it believes
+      - "8081:8081"        # square_driver's view, or lidar_viewer: one at a time
     environment:
       # Everything runs inside this one container, so keep ROS traffic on
       # localhost. Stops your nodes discovering a teammate's on the same wifi.

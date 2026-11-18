@@ -26,8 +26,8 @@ firmware, different IMU, similar marketing copy.
 
 The ESP32 does all the real-time work:
 
-- skid-steer kinematics: `/cmd_vel` in, four wheel speeds out. **It ignores
-  `linear.y`, so it cannot strafe**; see [Firmware](#firmware)
+- mecanum kinematics: `/cmd_vel` in, four wheel speeds out, with
+  [our own firmware](../../firmware/README.md). Yahboom's ignores `linear.y`
 - per-wheel PID, using the encoders (decoded in hardware by the ESP32's PCNT units)
 - integrating wheel odometry, published as `/odom_raw`
 - reading the lidar and IMU and publishing them (see [lidar.md](lidar.md))
@@ -109,15 +109,17 @@ pin voltage x 4.03. Published on `/battery` once a second, as volts x 10. See
 
 ## Firmware
 
-Ships as a prebuilt `.bin`. Ours is **version 2.1.0** (`config_robot.py`
+**The board now runs [our own firmware](../../firmware/README.md).** The rest of this
+section describes Yahboom's, which we backed up and can restore.
+
+Ships as a prebuilt `.bin`. Ours was **version 2.1.0** (`config_robot.py`
 prints it). We have **no source to modify** and almost never
 reflash it. What we change is its stored configuration.
 
 **It cannot strafe.** It was written for a skid-steer car: `linear.y` does nothing,
 and `/odom_raw` always reports `vy` as 0. Yahboom's
 [*Robot kinematics analysis*](https://github.com/YahboomTechnology/MicroROS-Car-Pi5/blob/main/16.%20ESP32%20basic%20course/16.Robot%20kinematics%20analysis.pdf)
-lesson says "V_y is invalid", and no setting changes it. Our own firmware, to fix
-this, is in progress on the `feat/custom-firmware` branch.
+lesson says "V_y is invalid", and no setting changes it. That is why we wrote our own.
 
 The firmware runs **micro-ROS**, a cut-down ROS client compiled into it. It is
 not ROS 2: there is no `ros2` command on the board.

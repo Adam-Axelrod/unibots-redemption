@@ -8,6 +8,9 @@ setup(
     name=package_name,
     version='0.1.0',
     packages=[package_name],
+    # lidar.html lives inside the package so lidar_viewer.py can find it next to itself
+    package_data={package_name: ['web/*.html']},
+    include_package_data=True,
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
@@ -24,6 +27,7 @@ setup(
         'console_scripts': [
             'odom_tf = robot_bringup.odom_tf:main',
             'scan_for_slam = robot_bringup.scan_for_slam:main',
+            'lidar_viewer = robot_bringup.lidar_viewer:main',
         ],
     },
 )
