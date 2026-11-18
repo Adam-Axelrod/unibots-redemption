@@ -64,8 +64,8 @@ printed, measure and update:
 
 Distances in metres, forward is +x, left is +y, up is +z. If a sensor is
 mounted rotated, set its yaw too, anticlockwise positive seen from above. The
-lidar's yaw is **-90°** (its 0° points out of the right side): see
-[lidar.md](lidar.md). The nodes read it from the transform, so change it in
+lidar's yaw is **0°** (arrow at the front), still to be confirmed with
+`lidar_viewer`: see [lidar.md](lidar.md). The nodes read it from the transform, so change it in
 `sensors.yaml` and nowhere else.
 
 ## Collection mechanism

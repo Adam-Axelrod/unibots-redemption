@@ -30,7 +30,7 @@ from tf2_ros import TransformBroadcaster
 
 from localisation.sensors import lidar_mount, load_sensor_config
 from robot_sim import world as world_lib
-from robot_sim.collision import motion_collides
+from robot_sim.collision import collides_with_segments, motion_collides
 from robot_sim.lidar import lidar_world_pose, simulate_ranges
 from robot_sim.viz_server import VizServer
 
@@ -38,6 +38,30 @@ from robot_sim.viz_server import VizServer
 def yaw_to_quaternion(yaw):
     """2D heading -> quaternion (only z and w are non-zero when rolling flat)."""
     return (0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0))
+
+
+def parse_start_override(x, y, yaw_deg, footprint, segments):
+    """Map-frame start pose from three strings, or None if all are empty.
+
+    The values are strings so that "not given" is an empty string rather than a
+    magic number. Simulator-only: this moves ground truth, not the estimator.
+    """
+    given = [v.strip() for v in (x, y, yaw_deg)]
+    if not any(given):
+        return None
+    if not all(given):
+        raise ValueError('start_x_m, start_y_m and start_yaw_deg must be given together')
+    try:
+        sx, sy, syaw = (float(v) for v in given)
+    except ValueError:
+        raise ValueError(f'start override must be numeric, got {given}') from None
+    if not all(math.isfinite(v) for v in (sx, sy, syaw)):
+        raise ValueError(f'start override must be finite, got {given}')
+    yaw = math.atan2(math.sin(math.radians(syaw)), math.cos(math.radians(syaw)))
+    pose = (sx, sy, yaw)
+    if collides_with_segments(pose, footprint, segments):
+        raise ValueError(f'start override {given} puts the footprint into a wall')
+    return pose
 
 
 class SimNode(Node):
@@ -53,6 +77,11 @@ class SimNode(Node):
         self.declare_parameter('cmd_timeout', 0.5)     # stop if commands stop
         self.declare_parameter('viz_port', 8080)
         self.declare_parameter('drive', 'mecanum')     # 'diff': wheels that cannot strafe
+        # Optional start pose override, map frame; leave all three empty for
+        # the world's own start.
+        self.declare_parameter('start_x_m', '')
+        self.declare_parameter('start_y_m', '')
+        self.declare_parameter('start_yaw_deg', '')
 
         world_name = self.get_parameter('world').value
         self.rate = self.get_parameter('rate').value
@@ -72,7 +101,16 @@ class SimNode(Node):
         self.segments = self.world['segments']
 
         # --- robot state ---
-        self.x, self.y, self.theta = self.world['start']
+        override = parse_start_override(
+            self.get_parameter('start_x_m').value,
+            self.get_parameter('start_y_m').value,
+            self.get_parameter('start_yaw_deg').value,
+            self.footprint, self.segments)
+        self.x, self.y, self.theta = override or self.world['start']
+        if override:
+            self.get_logger().info(
+                f'start override: x={self.x:.3f} m, y={self.y:.3f} m, '
+                f'yaw={math.degrees(self.theta):.1f} deg')
         self.vx = self.vy = self.wz = 0.0
         self.last_cmd_time = self.get_clock().now()
         self.trail = [(self.x, self.y)]

@@ -2,7 +2,7 @@
 # ws/src/localisation/localisation/frames.py
 
 from dataclasses import dataclass
-from math import atan2, cos, sin
+from math import atan2, cos, isfinite, radians, sin
 from pathlib import Path
 
 import yaml
@@ -12,7 +12,9 @@ Point = tuple[float, float]
 Pose = tuple[float, float, float]
 Segment = tuple[Point, Point]
 
-CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "arena.yaml"
+CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
+CONFIG_PATH = CONFIG_DIR / "arena.yaml"
+MATCH_OFFSET_KEYS = ("inward_offset_m", "lateral_offset_m", "yaw_deg")
 
 
 def wrap_angle(angle_rad: float) -> float:
@@ -92,6 +94,17 @@ class ArenaFrame:
         forward = -self.side_length_m / 2.0 + robot_length_m / 2.0
         return self.pose_to_map(forward, 0.0, 0.0)
 
+    # Offsets are inward, to the left facing inward, and anticlockwise from the nominal start.
+    def match_relative_pose(
+        self,
+        robot_length_m: float,
+        inward_m: float,
+        lateral_m: float,
+        yaw_rad: float,
+    ) -> Pose:
+        forward, left, heading = self.pose_to_arena(*self.nominal_start_pose(robot_length_m))
+        return self.pose_to_map(forward + inward_m, left + lateral_m, heading + yaw_rad)
+
     def start_lateral_bounds(self, robot_width_m: float) -> tuple[float, float]:
         if not 0 < robot_width_m <= self.guide_separation_m:
             raise ValueError("robot_width_m must fit between the scoring guides")
@@ -101,14 +114,44 @@ class ArenaFrame:
 
 
 # Use the installed ROS configuration when available.
-def get_arena_config_path() -> Path:
+def get_config_path(name: str) -> Path:
     try:
         from ament_index_python.packages import get_package_share_directory
 
         package_share = get_package_share_directory("localisation")
-        return Path(package_share) / "config" / "arena.yaml"
+        return Path(package_share) / "config" / name
     except (ImportError, LookupError):
-        return CONFIG_PATH
+        return CONFIG_DIR / name
+
+
+def get_arena_config_path() -> Path:
+    return get_config_path("arena.yaml")
+
+
+def load_match_config(path: str | Path | None = None) -> dict:
+    config_path = Path(path) if path is not None else get_config_path("match.yaml")
+
+    with config_path.open(encoding="utf-8") as stream:
+        return yaml.safe_load(stream)
+
+
+# Map-frame poses for a match.yaml section such as start or end
+def match_pose(arena: ArenaFrame, robot_length_m: float, match: dict, section: str) -> Pose:
+    offsets = match.get(section) if isinstance(match, dict) else None
+    if not isinstance(offsets, dict):
+        raise ValueError(f"match config needs a {section} section")
+
+    values = []
+    for key in MATCH_OFFSET_KEYS:
+        value = offsets.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{section}.{key} must be a number, got {value!r}")
+        if not isfinite(value):
+            raise ValueError(f"{section}.{key} must be finite")
+        values.append(float(value))
+
+    inward, lateral, yaw_deg = values
+    return arena.match_relative_pose(robot_length_m, inward, lateral, radians(yaw_deg))
 
 
 def load_arena_frame(path: str | Path | None = None) -> ArenaFrame:

@@ -12,8 +12,8 @@ lidar:
   # Position relative to the centre of base_footprint
   translation_m: [0.020, 0.0, 0.144]
 
-  # LiDAR zero angle points towards the robot's right
-  rotation_rpy_deg: [0.0, 0.0, -90.0]
+  # The LiDAR's arrow, its zero angle, points at the robot's front; confirm with lidar_viewer
+  rotation_rpy_deg: [0.0, 0.0, 0.0]
 
   # Robot-relative angles, excluding the obstructed rear
   usable_sector_deg: [-100.0, 100.0]

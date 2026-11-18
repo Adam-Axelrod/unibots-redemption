@@ -33,13 +33,13 @@ direction with no return reads `0`, which is below `range_min`, so filter on
 
 Two things follow from that:
 
-- **The lidar's angle 0 is not the robot's straight ahead.** On our robot the
-  lidar's 0° points out of the **right** side, even though its arrow points
-  forward (checked 2026-11-11). So it is mounted at **-90°**, and that is
-  recorded once, in `ws/src/localisation/config/sensors.yaml`.
+- **The lidar's mounting yaw is recorded once, in
+  `ws/src/localisation/config/sensors.yaml`.** It is 0°, with the arrow at the
+  robot's front (see [Mounting](#mounting)); confirm it with `lidar_viewer`
+  below before trusting it on the hardware.
   Compute a beam's angle as `msg.angle_min + i * msg.angle_increment`, then add
   the mounting yaw from `robot_control.lidar_mount`, as all the nodes here do.
-  Never assume an index, and never assume 0° is ahead. The simulator uses the same mounting.
+  Never assume an index. The simulator and localisation use the same mounting.
 - **Resolution is 1°, coarser than the lidar's own 0.8°**, and anything past
   8 m is dropped. At 1 m, 1° is about 17 mm between points, so a 20 mm Atom on
   the floor is at the edge of what it can see, even if the lidar is mounted low
@@ -68,7 +68,8 @@ not resolve, use the Pi's full Tailscale name (see
 ssh -L 8081:localhost:8081 rpi5
 ```
 
-It works the same against the simulator, at <http://localhost:8081>. Add `?r=4`
+It works the same against the simulator, at <http://localhost:8081>. `square_driver`'s
+own view also uses port 8081, so run only one of them at a time. Add `?r=4`
 to the URL to start zoomed out to 4 m.
 
 **To check the orientation**, hold a hand about 30 cm in front of the robot. The

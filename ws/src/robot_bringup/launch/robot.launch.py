@@ -91,9 +91,7 @@ def generate_launch_description():
             arguments=['0', '0', '0.05', '0', '0', '0',
                        'base_footprint', 'base_link'],
         ),
-        # The lidar's own 0 deg points out of the robot's right side, although
-        # its arrow points forward (checked 2026-11-11): so it is turned -90 deg
-        # (clockwise, seen from above). Its mounting is set once, in
+        # The lidar's mounting, yaw included, is set once, in
         # localisation/config/sensors.yaml, and the simulator reads the same
         # file. square_driver, scan_for_slam and slam_toolbox all read this TF.
         lidar_transform(),

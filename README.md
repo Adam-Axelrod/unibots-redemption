@@ -42,7 +42,8 @@ trail.
 Open **http://localhost:8081** as well for the driver's own view of things:
 where it thinks it is, what the lidar sees right now, its map, the cells it has
 visited, and where it is heading. The page at `:8080` shows where the robot
-*really* is, and only exists in simulation. If you started `docker compose up`
+*really* is, and only exists in simulation. `ros2 run robot_bringup lidar_viewer` serves on
+`:8081` too, so run it or the driver, not both. If you started `docker compose up`
 before this port was added, run `docker compose down` and start it again.
 
 Try the others:

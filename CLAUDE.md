@@ -154,11 +154,13 @@ Plugs into the control board's radar port; the ESP32 publishes `/scan` (360
 points at 1°, angle_min -180°: always use `angle_min + i * angle_increment`).
 Nothing on the Pi reads the lidar.
 
-⚠️ **The lidar's 0° is not straight ahead on our robot: it is mounted at -90°**
-(its 0° points out of the right side). It is set once, in
-`ws/src/localisation/config/sensors.yaml`, which both launch files and the
-simulator read. Every node that reads
-`/scan` adds it via `robot_control.lidar_mount`; do the same in new nodes.
+⚠️ **The lidar's mounting yaw is set once, in
+`ws/src/localisation/config/sensors.yaml`**, which both launch files, the
+simulator and localisation read. It is 0° (arrow, and angle 0, at the robot's
+front), but that is not yet confirmed on the hardware: check it with
+`lidar_viewer` (see [`docs/hardware/lidar.md`](docs/hardware/lidar.md)). Every
+node that reads `/scan` adds it via `robot_control.lidar_mount`; do the same in
+new nodes, and never hard-code it.
 
 The repo also has a Pi-side MS200 driver (`oradar_lidar`, vendored in
 `docker/vendor/`), for the lidar plugged into the Pi over USB instead. It is

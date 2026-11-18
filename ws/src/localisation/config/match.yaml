@@ -2,10 +2,16 @@
 
 # Set to the assigned colour before each match.
 team: yellow
-
 duration_s: 180.0
 
-# The robot starts centred against the home wall, facing into the arena.
+# Offsets relative to the nominal home-wall start
 start:
   lateral_offset_m: 0.0
+  inward_offset_m: 0.0
+  yaw_deg: 0.0
+
+# Target pose relative to the nominal home-wall start
+end:
+  lateral_offset_m: 0.0
+  inward_offset_m: 0.0
   yaw_deg: 0.0

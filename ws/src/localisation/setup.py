@@ -18,6 +18,7 @@ setup(
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
+        (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -26,6 +27,8 @@ setup(
     description='Fixed-map localisation for the Unibots competition arena.',
     license='MIT',
     entry_points={
-        'console_scripts': [],
+        'console_scripts': [
+            'localisation_node = localisation.localisation_node:main',
+        ],
     },
 )
