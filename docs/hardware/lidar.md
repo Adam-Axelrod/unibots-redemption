@@ -55,10 +55,21 @@ docker compose exec robot bash
 ros2 run robot_bringup lidar_viewer
 ```
 
-Then on your Mac, with Tailscale on, open **<http://raspberrypi:8081>**. The robot
-container uses host networking, so the port is already on the Pi. If the name does
-not resolve, use the Pi's full Tailscale name (see
-[remote-access.md](../remote-access.md)), or tunnel it over SSH and open
+It prints the address to open. Ctrl-click (Cmd-click in some terminals) the first one:
+
+```
+showing /scan. Ctrl-click to open:
+    http://raspberrypi.tail6c0787.ts.net:8081    <- any laptop on Tailscale
+    http://localhost:8081    <- this machine only
+```
+
+That is the Pi's **full** Tailscale name, which works on every laptop with Tailscale
+on, including Jack's and Sami's. The short `http://raspberrypi:8081` only works on
+Adam's laptop, because the Pi is in his tailnet and only shared with theirs. The
+viewer asks Tailscale for the name when it starts, and `-p url_host:=<name>` overrides
+that. The robot container uses host networking, so the port is already on the Pi.
+
+If the page still won't load, tunnel it over SSH instead and open
 <http://localhost:8081>:
 
 ```bash
