@@ -19,7 +19,7 @@ Three small Python packages, no C++, no vendored third-party source:
 |---|---|---|
 | `robot_control` | Driving patterns and lidar logic. **The interesting code.** | both |
 | `robot_sim` | 2D simulator + browser visualiser | laptop |
-| `robot_bringup` | Launch files, and `odom_tf` for the real robot | both |
+| `robot_bringup` | Launch files, `odom_tf` for the real robot, and `lidar_viewer` (live `/scan` in a browser, port 8081) | both |
 
 ## The one idea that matters
 
