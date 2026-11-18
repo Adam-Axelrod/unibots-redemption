@@ -42,6 +42,44 @@ Two things follow from that:
   the floor is at the edge of what it can see, even if the lidar is mounted low
   enough to hit it. Fine for walls and other robots.
 
+## Seeing it live: `lidar_viewer`
+
+A browser view of `/scan`: the robot in the middle, front pointing up, and every
+return as a dot. It is the quickest way to check the mounting (below) and the
+real range. It only subscribes, so it is safe to run next to a driving node.
+
+On the Pi, with the agent and `docker compose --profile robot up robot` running:
+
+```bash
+docker compose exec robot bash
+ros2 run robot_bringup lidar_viewer
+```
+
+Then on your Mac, with Tailscale on, open **<http://raspberrypi:8081>**. The robot
+container uses host networking, so the port is already on the Pi. If the name does
+not resolve, use the Pi's full Tailscale name (see
+[remote-access.md](../remote-access.md)), or tunnel it over SSH and open
+<http://localhost:8081>:
+
+```bash
+ssh -L 8081:localhost:8081 rpi5
+```
+
+It works the same against the simulator, at <http://localhost:8081>. Add `?r=4`
+to the URL to start zoomed out to 4 m.
+
+**To check the orientation**, hold a hand about 30 cm in front of the robot. The
+red nearest-point dot must appear straight above the robot, near 0°. Move round to
+its left and the dot must follow to +90°. If the dot shows up at some other angle,
+the lidar is rotated by that angle. If left and right are mirrored, its angle
+direction is reversed. Hover over any dot to read its angle and range.
+
+**To check the range**, zoom out and read *farthest* in the side panel, then walk a
+flat object away from the robot until its dots disappear. Remember that the board
+cuts everything past 8 m.
+
+Not for matches: no remote connections are allowed during one (R8).
+
 ## The Pi-side driver (not used)
 
 The repo also contains a driver for running the MS200 **directly from the Pi**,

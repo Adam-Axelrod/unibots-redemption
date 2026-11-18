@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lidar Viewer</title>
+<style>
+  :root {
+    --bg: #0f1419; --panel: #171d24; --line: #2a333d; --grid: #222a33;
+    --ink: #e6edf3; --dim: #8b98a5;
+    --robot: #4dd4c0; --dot: #f5a35c; --near: #e5534b; --old: #f5a35c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    display: flex; flex-direction: column; min-height: 100vh;
+  }
+  header {
+    padding: 12px 16px; border-bottom: 1px solid var(--line);
+    display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap;
+  }
+  h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  #status { margin-left: auto; color: var(--dim); }
+  #status.live { color: var(--robot); }
+  #status.stale { color: var(--near); font-weight: 600; }
+  main { flex: 1; display: flex; padding: 16px; gap: 16px; flex-wrap: wrap; }
+  #wrap { flex: 1; min-width: 300px; max-width: calc(100vh - 90px); position: relative; }
+  canvas {
+    width: 100%; aspect-ratio: 1; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 8px; display: block;
+    cursor: crosshair; touch-action: none;
+  }
+  #tip {
+    position: absolute; pointer-events: none; display: none;
+    background: #0b0f13ee; border: 1px solid var(--line); border-radius: 6px;
+    padding: 4px 8px; font-size: 12px; white-space: nowrap;
+  }
+  aside { width: 260px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 12px; margin-bottom: 12px;
+  }
+  .card h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--dim); margin: 0 0 8px; font-weight: 600;
+  }
+  .row { display: flex; justify-content: space-between; gap: 8px; }
+  .row span:last-child { color: var(--robot); text-align: right; }
+  .row.near span:last-child { color: var(--near); }
+  .btns { display: flex; flex-wrap: wrap; gap: 6px; }
+  button {
+    font: inherit; font-size: 12px; color: var(--ink); background: #222b34;
+    border: 1px solid var(--line); border-radius: 4px; padding: 3px 8px; cursor: pointer;
+  }
+  button.on { border-color: var(--robot); color: var(--robot); }
+  label { display: flex; gap: 6px; align-items: center; margin-top: 8px; cursor: pointer; }
+  .hint { color: var(--dim); font-size: 12px; margin: 0; }
+  .hint + .hint { margin-top: 6px; }
+  @media (max-width: 720px) { aside { width: 100%; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Lidar Viewer</h1>
+  <span class="hint" id="meta">waiting for /scan…</span>
+  <span id="status">connecting…</span>
+</header>
+
+<main>
+  <div id="wrap">
+    <canvas id="c"></canvas>
+    <div id="tip"></div>
+  </div>
+  <aside>
+    <div class="card">
+      <h2>View radius</h2>
+      <div class="btns" id="zoom"></div>
+      <label><input type="checkbox" id="trail"> fade in recent scans</label>
+      <label><input type="checkbox" id="freeze"> freeze <span class="hint">(space)</span></label>
+    </div>
+    <div class="card">
+      <h2>Nearest within ±10°</h2>
+      <div class="row"><span>front 0°</span><span id="d-front">–</span></div>
+      <div class="row"><span>left +90°</span><span id="d-left">–</span></div>
+      <div class="row"><span>right −90°</span><span id="d-right">–</span></div>
+      <div class="row"><span>back 180°</span><span id="d-back">–</span></div>
+    </div>
+    <div class="card">
+      <h2>Whole scan</h2>
+      <div class="row near"><span>nearest</span><span id="near">–</span></div>
+      <div class="row"><span>farthest</span><span id="far">–</span></div>
+      <div class="row"><span>returns</span><span id="count">–</span></div>
+      <div class="row"><span>rate</span><span id="hz">–</span></div>
+      <div class="row"><span>limits</span><span id="limits">–</span></div>
+    </div>
+    <div class="card">
+      <h2>Checking orientation</h2>
+      <p class="hint">Hold a hand about 30 cm in front of the robot. The red
+        nearest dot should appear straight <b>above</b> the robot, near 0°.</p>
+      <p class="hint">Then move to its left: the dot should move to the left,
+        near +90°. If it shows up somewhere else, the lidar is rotated by that
+        angle. If left and right are swapped, it is upside down or its angle
+        direction is reversed.</p>
+      <p class="hint">Hover over any dot to read its angle and range.</p>
+    </div>
+  </aside>
+</main>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const tip = document.getElementById('tip');
+const $ = id => document.getElementById(id);
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+const ROBOT_SIZE = 0.20;        // our chassis is 200 x 200 mm
+const RADII = [0.25, 0.5, 1, 2, 4, 8];
+const TRAIL_SCANS = 8;
+
+// metres from centre to the canvas edge; open with ?r=4 to start zoomed out
+let radius = +new URLSearchParams(location.search).get('r') || 1;
+let scan = null;                // latest decoded scan
+let points = [];                // [{a, r, x, y}] for the latest scan
+let history = [];               // point lists of recent scans, for the trail
+let lastScanAt = 0;
+let frozen = false;
+
+// ---------------------------------------------------------------- controls
+for (const r of RADII) {
+  const b = document.createElement('button');
+  b.textContent = r < 1 ? `${r * 100} cm` : `${r} m`;
+  b.onclick = () => { radius = r; syncZoom(); draw(); };
+  b.dataset.r = r;
+  $('zoom').appendChild(b);
+}
+function syncZoom() {
+  for (const b of $('zoom').children) b.classList.toggle('on', +b.dataset.r === radius);
+}
+syncZoom();
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  radius = Math.min(10, Math.max(0.15, radius * (e.deltaY > 0 ? 1.15 : 1 / 1.15)));
+  syncZoom(); draw();
+}, { passive: false });
+
+$('freeze').onchange = e => { frozen = e.target.checked; };
+$('trail').onchange = () => draw();
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space') { e.preventDefault(); $('freeze').click(); }
+});
+
+// ------------------------------------------------------------------- data
+function decode(msg) {
+  const pts = [];
+  for (let i = 0; i < msg.ranges_mm.length; i++) {
+    const r = msg.ranges_mm[i] / 1000;
+    if (r <= 0 || r < msg.range_min || r > msg.range_max) continue;    // no return
+    const a = msg.angle_min + i * msg.angle_increment;                 // never assume index 0 is ahead
+    pts.push({ a, r, x: r * Math.cos(a), y: r * Math.sin(a) });       // x forward, y left
+  }
+  return pts;
+}
+
+const deg = a => {
+  let d = a * 180 / Math.PI;
+  d = ((d + 180) % 360 + 360) % 360 - 180;          // wrap to [-180, 180)
+  return d;
+};
+const fmtDeg = a => {
+  const d = Math.round(deg(a)) || 0;               // || 0 turns -0 into 0
+  return `${d > 0 ? '+' : ''}${d}°`;
+};
+const fmtRing = r => r < 1 ? `${+(r * 100).toFixed(1)} cm` : `${+r.toFixed(2)} m`;
+const fmtR = r => r < 1 ? `${(r * 100).toFixed(1)} cm` : `${r.toFixed(3)} m`;
+
+function nearestNear(centreDeg) {
+  let best = null;
+  for (const p of points) {
+    let diff = Math.abs(deg(p.a) - centreDeg);
+    diff = Math.min(diff, 360 - diff);
+    if (diff <= 10 && (!best || p.r < best.r)) best = p;
+  }
+  return best ? `${fmtR(best.r)}  ${fmtDeg(best.a)}` : 'nothing';
+}
+
+function readouts() {
+  if (!scan) return;
+  let near = null, far = null;
+  for (const p of points) {
+    if (!near || p.r < near.r) near = p;
+    if (!far || p.r > far.r) far = p;
+  }
+  $('near').textContent = near ? `${fmtR(near.r)}  ${fmtDeg(near.a)}` : '–';
+  $('far').textContent = far ? `${fmtR(far.r)}  ${fmtDeg(far.a)}` : '–';
+  $('count').textContent = `${points.length} / ${scan.ranges_mm.length}`;
+  $('hz').textContent = `${scan.hz.toFixed(1)} Hz`;
+  $('limits').textContent = `${scan.range_min.toFixed(2)}–${scan.range_max.toFixed(1)} m`;
+  $('d-front').textContent = nearestNear(0);
+  $('d-left').textContent = nearestNear(90);
+  $('d-right').textContent = nearestNear(-90);
+  $('d-back').textContent = nearestNear(180);
+  const step = scan.angle_increment * 180 / Math.PI;
+  $('meta').textContent =
+    `frame ${scan.frame || '?'} · ${scan.ranges_mm.length} beams at ${step.toFixed(2)}°`;
+}
+
+// ---------------------------------------------------------------- drawing
+let size = 0, dpr = 1;
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  size = canvas.clientWidth;
+  canvas.width = canvas.height = Math.round(size * dpr);
+  draw();
+}
+new ResizeObserver(resize).observe(canvas);
+
+// Robot frame -> screen. Viewed from above: forward is up, left is left.
+const scale = () => (size / 2) / radius;
+const toScreen = (x, y) => [size / 2 - y * scale(), size / 2 - x * scale()];
+
+function niceStep(r) {
+  for (const s of [0.05, 0.1, 0.25, 0.5, 1, 2]) if (r / s <= 5) return s;
+  return 2;
+}
+
+function draw() {
+  if (!size) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, size, size);
+  const c = size / 2, s = scale();
+
+  // range rings
+  const step = niceStep(radius);
+  ctx.font = '11px ui-monospace, Menlo, monospace';
+  ctx.lineWidth = 1;
+  for (let r = step; r <= radius * 1.42; r += step) {
+    ctx.strokeStyle = css('--grid');
+    ctx.beginPath(); ctx.arc(c, c, r * s, 0, 2 * Math.PI); ctx.stroke();
+    ctx.fillStyle = css('--dim');
+    const [lx, ly] = toScreen(r * Math.cos(Math.PI / 4), -r * Math.sin(Math.PI / 4));
+    if (lx < size - 4 && ly > 12) ctx.fillText(fmtRing(r), lx + 3, ly - 3);
+  }
+
+  // spokes every 30°, labelled at the four that matter
+  for (let d = 0; d < 360; d += 30) {
+    const a = d * Math.PI / 180;
+    const [ex, ey] = toScreen(radius * 1.5 * Math.cos(a), radius * 1.5 * Math.sin(a));
+    ctx.strokeStyle = css('--grid');
+    ctx.beginPath(); ctx.moveTo(c, c); ctx.lineTo(ex, ey); ctx.stroke();
+  }
+  ctx.fillStyle = css('--dim');
+  ctx.textAlign = 'center';
+  ctx.fillText('0° front', c, 16);
+  ctx.fillText('180° back', c, size - 8);
+  ctx.textAlign = 'left';  ctx.fillText('+90° left', 8, c - 6);
+  ctx.textAlign = 'right'; ctx.fillText('−90° right', size - 8, c - 6);
+  ctx.textAlign = 'left';
+
+  // fading trail of recent scans
+  const dot = css('--dot');
+  if ($('trail').checked) {
+    history.forEach((pts, k) => {
+      ctx.globalAlpha = 0.08 + 0.3 * (k / history.length);
+      ctx.fillStyle = css('--old');
+      for (const p of pts) { const [x, y] = toScreen(p.x, p.y); ctx.fillRect(x - 1.5, y - 1.5, 3, 3); }
+    });
+    ctx.globalAlpha = 1;
+  }
+
+  // robot: 200 x 200 mm square, drawn with the lidar at its centre
+  const half = ROBOT_SIZE / 2 * s;
+  ctx.strokeStyle = css('--robot'); ctx.lineWidth = 2;
+  ctx.fillStyle = css('--robot') + '22';
+  ctx.fillRect(c - half, c - half, half * 2, half * 2);
+  ctx.strokeRect(c - half, c - half, half * 2, half * 2);
+  const arrow = Math.max(half * 0.8, 10);
+  ctx.fillStyle = css('--robot');
+  ctx.beginPath();
+  ctx.moveTo(c, c - arrow); ctx.lineTo(c - arrow * 0.45, c + arrow * 0.35);
+  ctx.lineTo(c, c + arrow * 0.1); ctx.lineTo(c + arrow * 0.45, c + arrow * 0.35);
+  ctx.closePath(); ctx.fill();
+
+  // this scan
+  let near = null;
+  ctx.fillStyle = dot;
+  for (const p of points) {
+    const [x, y] = toScreen(p.x, p.y);
+    ctx.beginPath(); ctx.arc(x, y, 2.5, 0, 2 * Math.PI); ctx.fill();
+    if (!near || p.r < near.r) near = p;
+  }
+  if (near) {
+    const [x, y] = toScreen(near.x, near.y);
+    ctx.strokeStyle = css('--near'); ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(c, c); ctx.lineTo(x, y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = css('--near');
+    ctx.beginPath(); ctx.arc(x, y, 5, 0, 2 * Math.PI); ctx.fill();
+  }
+  if (hover) drawHover();
+}
+
+// ------------------------------------------------------------------ hover
+let hover = null;      // {px, py} in CSS pixels
+canvas.addEventListener('mousemove', e => {
+  const b = canvas.getBoundingClientRect();
+  hover = { px: e.clientX - b.left, py: e.clientY - b.top };
+  draw();
+});
+canvas.addEventListener('mouseleave', () => { hover = null; tip.style.display = 'none'; draw(); });
+
+function drawHover() {
+  let best = null, bestD = 14;
+  for (const p of points) {
+    const [x, y] = toScreen(p.x, p.y);
+    const d = Math.hypot(x - hover.px, y - hover.py);
+    if (d < bestD) { best = p; bestD = d; }
+  }
+  if (!best) { tip.style.display = 'none'; return; }
+  const [x, y] = toScreen(best.x, best.y);
+  ctx.strokeStyle = css('--ink'); ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(x, y, 6, 0, 2 * Math.PI); ctx.stroke();
+  tip.textContent = `${fmtDeg(best.a)}   ${fmtR(best.r)}   (x ${best.x.toFixed(2)}, y ${best.y.toFixed(2)})`;
+  tip.style.display = 'block';
+  tip.style.left = Math.min(x + 12, size - tip.offsetWidth - 4) + 'px';
+  tip.style.top = (y + 12) + 'px';
+}
+
+// ----------------------------------------------------------------- stream
+function connect() {
+  const es = new EventSource('/stream');
+  es.onopen = () => setStatus();
+  es.onmessage = e => {
+    lastScanAt = Date.now();
+    setStatus();
+    if (frozen) return;
+    scan = JSON.parse(e.data);
+    if (points.length) history = [...history, points].slice(-TRAIL_SCANS);
+    points = decode(scan);
+    readouts();
+    draw();
+  };
+  es.onerror = () => {
+    $('status').textContent = 'viewer offline, retrying…';
+    $('status').className = 'stale';
+  };
+}
+
+function setStatus() {
+  const st = $('status');
+  const age = Date.now() - lastScanAt;
+  if (!lastScanAt) { st.textContent = 'connected, no /scan yet'; st.className = 'stale'; }
+  else if (age > 1000) { st.textContent = `no /scan for ${(age / 1000).toFixed(0)} s`; st.className = 'stale'; }
+  else { st.textContent = frozen ? 'frozen' : 'live'; st.className = frozen ? '' : 'live'; }
+}
+setInterval(() => { if ($('status').textContent !== 'viewer offline, retrying…') setStatus(); }, 500);
+
+connect();
+</script>
+</body>
+</html>
