@@ -28,8 +28,10 @@ From Yahboom's *Introduction to lidar*:
 
 The board publishes **360 points at 1° spacing, from -180° to 180°, range
 0.12-8 m, at about 12.5 Hz** (checked on our board, firmware 2.1.0). A
-direction with no return reads `0`, which is below `range_min`, so filter on
-`range_min`/`range_max` as `sweep_planner` does.
+direction with no return reads `0`. Our firmware still sends readings closer than
+the `range_min` it reports, so `sweep_planner` keeps everything from 0.03 m up
+rather than filtering on `range_min`. Filtering on `range_min`/`range_max`, as
+`room_mapper` does, is fine when nearby objects don't matter.
 
 Two things follow from that:
 
@@ -82,6 +84,8 @@ the code assumes angle 0 is straight ahead. If it points another way, wall sensi
 collision avoidance look the wrong way, with no error.
 
 The battery wires currently sit in the lidar's view, at about +145° and 13 cm.
+`sweep_planner` ignores returns inside the chassis square (`body_half_width`), which
+covers them.
 
 The lidar must see over everything else on the robot. Anything on the chassis
 at the same height as the lidar shows up in every scan as a fixed blind spot.

@@ -40,7 +40,7 @@ Watch the browser: the robot drives a 1 m square and leaves a trail.
 Try the others:
 
 ```bash
-ros2 run robot_control sweep_planner  # back-and-forth coverage of the room
+ros2 run robot_control sweep_planner  # covers the floor, and backs off if stuck
 ros2 run robot_control room_mapper    # prints its guess at the room size
 ```
 
